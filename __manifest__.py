@@ -6,7 +6,6 @@
     'depends': ['hr_recruitment'],  # Crucial: This ensures hr.job exists
     'data': [
         'security/ir.model.access.csv', # You need to give yourself permission to run the code
-        'views/hr_applicant_views.xml',
     ],
     'installable': True,
     'application': False,
