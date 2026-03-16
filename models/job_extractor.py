@@ -29,19 +29,5 @@ class JobExtractor(models.AbstractModel):
             if not applicant.job_id:
                 return []
             return [self._prepare_job_payload(applicant.job_id)]
-
-        # Otherwise, return all available jobs.
-        jobs = self.env['hr.job'].search([])
-        job_list = []
-        for job in jobs :
-            job_list.append(self._prepare_job_payload(job))
-
-        return job_list
-
-    def get_job_data_from_applicant_id(self, applicant_id):
-        applicant = self.env['hr.applicant'].browse(applicant_id).exists()
-        if not applicant:
-            return []
-        return self.get_job_data(applicant=applicant)
     
     
