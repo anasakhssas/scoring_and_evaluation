@@ -19,7 +19,7 @@ class JobExtractor(models.AbstractModel):
             'job_id': job.id,
             'title': job.name,
             'education': job.expected_degree.name,
-            'min_exp_years': None,
+            'min_exp_years': job.min_exp_years or 0.0,
             'skills': self._extract_skills_to_dict(job.current_job_skill_ids),
         }
 

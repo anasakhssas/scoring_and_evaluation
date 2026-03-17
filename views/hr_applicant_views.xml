@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_applicant_extraction_preview_wizard_form" model="ir.ui.view">
+        <field name="name">applicant.extraction.preview.wizard.form</field>
+        <field name="model">applicant.extraction.preview.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Extraction Preview" create="0" edit="0" delete="0">
+                <group>
+                    <field name="applicant_id"/>
+                    <field name="preview_title"/>
+                </group>
+                <group>
+                    <field name="extracted_data" widget="text" nolabel="1"/>
+                </group>
+                <footer>
+                    <button string="Close" class="btn-primary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="hr_applicant_view_form_inherit_extraction_test_buttons" model="ir.ui.view">
+        <field name="name">hr.applicant.form.inherit.extraction.test.buttons</field>
+        <field name="model">hr.applicant</field>
+        <field name="inherit_id" ref="hr_recruitment.hr_applicant_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//form/header" position="inside">
+                <button
+                    name="action_show_job_extraction_preview"
+                    string="Test Job Extraction"
+                    type="object"
+                    class="oe_highlight"
+                    invisible="not id"
+                />
+                <button
+                    name="action_show_applicant_extraction_preview"
+                    string="Test Applicant Extraction"
+                    type="object"
+                    invisible="not id"
+                />
+            </xpath>
+        </field>
+    </record>
+</odoo>
