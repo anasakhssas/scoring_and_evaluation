@@ -1,10 +1,16 @@
 import json
+import os
+import re
+
+import requests
 
 from odoo import models
+from odoo.exceptions import UserError
 
 
 class HrApplicant(models.Model):
     _inherit = 'hr.applicant'
+    _GROQ_CHAT_COMPLETIONS_URL = 'https://api.groq.com/openai/v1/chat/completions'
 
     def _prepare_preview_payload(self, payload):
         if isinstance(payload, dict):
@@ -57,6 +63,155 @@ class HrApplicant(models.Model):
         )
         return keyword_match[:1] or pdf_attachments[:1]
 
+    def _get_cv_text(self, attachment):
+        return (attachment.index_content or '').strip()
+
+    def _get_groq_configuration(self):
+        params = self.env['ir.config_parameter'].sudo()
+        api_key = ''
+        for key_name in ('scoring_candidates.groq_api_key', 'groq_api_key', 'GROQ_API_KEY'):
+            key_value = (params.get_param(key_name) or '').strip()
+            if key_value:
+                api_key = key_value
+                break
+
+        if not api_key:
+            for env_name in ('GROQ_API_KEY', 'GROQ_APIKEY'):
+                env_value = (os.getenv(env_name) or '').strip()
+                if env_value:
+                    api_key = env_value
+                    break
+
+        model = (
+            params.get_param('scoring_candidates.groq_model')
+            or params.get_param('groq_model')
+        )
+        if not api_key:
+            raise UserError(
+                'Missing Groq API key.\n'
+                'Set one of these system parameters:\n'
+                '- scoring_candidates.groq_api_key\n'
+                '- groq_api_key\n'
+                'Or set environment variable GROQ_API_KEY and restart Odoo.'
+            )
+        return api_key, model
+
+    def _extract_json_from_llm_output(self, raw_output):
+        cleaned = (raw_output or '').strip()
+        if cleaned.startswith('```'):
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned)
+            cleaned = re.sub(r'\s*```$', '', cleaned)
+
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            json_match = re.search(r'\{[\s\S]*\}', cleaned)
+            if not json_match:
+                raise UserError('Groq response does not contain a valid JSON object.')
+            try:
+                return json.loads(json_match.group(0))
+            except json.JSONDecodeError as error:
+                raise UserError('Unable to parse Groq JSON response: %s' % error) from error
+
+    def _normalize_ai_profile(self, payload):
+        if not isinstance(payload, dict):
+            payload = {}
+
+        education = payload.get('education') if isinstance(payload.get('education'), dict) else {}
+        experiences = payload.get('experiences') if isinstance(payload.get('experiences'), list) else []
+        skills = payload.get('skills') if isinstance(payload.get('skills'), dict) else {}
+
+        normalized_experiences = []
+        for experience in experiences:
+            if not isinstance(experience, dict):
+                continue
+            tasks = experience.get('tasks') if isinstance(experience.get('tasks'), list) else []
+            normalized_experiences.append({
+                'title': experience.get('title') or '',
+                'company': experience.get('company') or '',
+                'duration': experience.get('duration') or '',
+                'tasks': [str(task).strip() for task in tasks if str(task).strip()],
+            })
+
+        normalized_skills = {}
+        for skill_name, skill_level in skills.items():
+            if not skill_name:
+                continue
+            try:
+                normalized_level = int(skill_level)
+            except (TypeError, ValueError):
+                continue
+            normalized_skills[str(skill_name).strip()] = max(1, min(5, normalized_level))
+
+        return {
+            'id': self.id,
+            'name': payload.get('name') or self.partner_name or '',
+            'education': {
+                'degree': education.get('degree') or '',
+                'field': education.get('field') or '',
+                'university': education.get('university') or '',
+            },
+            'experiences': normalized_experiences,
+            'skills': normalized_skills,
+        }
+
+    def _extract_profile_with_groq(self, cv_text):
+        self.ensure_one()
+        api_key, model = self._get_groq_configuration()
+
+        system_prompt = (
+            'You are an expert CV parser. '\
+            'Return ONLY valid JSON with this exact top-level structure: '\
+            '{"id": int, "name": str, "education": {"degree": str, "field": str, "university": str}, '\
+            '"experiences": [{"title": str, "company": str, "duration": str, "tasks": [str]}], '\
+            '"skills": {"skill_name": int_1_to_5}}. '\
+            'Do not include markdown, comments, or explanations.'
+        )
+        user_prompt = (
+            'Extract CV data from the text below. '\
+            'Set "id" to %s. '\
+            'If a value is missing, use empty string, empty list, or empty object. '\
+            'Keep skills levels between 1 and 5.\n\nCV TEXT:\n%s'
+        ) % (self.id, cv_text[:16000])
+
+        request_payload = {
+            'model': model,
+            'temperature': 0,
+            'messages': [
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_prompt},
+            ],
+            'response_format': {'type': 'json_object'},
+        }
+        headers = {
+            'Authorization': 'Bearer %s' % api_key,
+            'Content-Type': 'application/json',
+        }
+
+        try:
+            response = requests.post(
+                self._GROQ_CHAT_COMPLETIONS_URL,
+                headers=headers,
+                json=request_payload,
+                timeout=90,
+            )
+            response.raise_for_status()
+        except requests.RequestException as error:
+            raise UserError('Groq request failed: %s' % error) from error
+
+        response_payload = response.json()
+        choices = response_payload.get('choices') or []
+        if not choices:
+            raise UserError('Groq response did not contain choices.')
+
+        message = choices[0].get('message') or {}
+        content = message.get('content')
+        if not content:
+            raise UserError('Groq response content is empty.')
+
+        ai_payload = self._extract_json_from_llm_output(content)
+        return self._normalize_ai_profile(ai_payload)
+
     def get_extracted_job_data(self):
         self.ensure_one()
         return self.env['extract.job.info'].get_job_data(applicant=self)
@@ -79,9 +234,18 @@ class HrApplicant(models.Model):
 
     def get_extracted_applicant_data(self):
         self.ensure_one()
-        return {
-            'cv_data': self.get_extracted_cv_data(),
-        }
+        attachment = self._select_cv_attachment()
+        if not attachment:
+            raise UserError('No PDF CV found for this applicant.')
+
+        cv_text = self._get_cv_text(attachment)
+        if not cv_text:
+            raise UserError(
+                'No extracted text found in the PDF attachment. '
+                'Use a searchable PDF or enable attachment indexing in Odoo.'
+            )
+
+        return self._extract_profile_with_groq(cv_text)
 
     def action_show_job_extraction_preview(self):
         self.ensure_one()
