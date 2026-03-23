@@ -29,7 +29,11 @@ class HrApplicant(models.Model):
         wizard = self.env['applicant.extraction.preview.wizard'].create({
             'applicant_id': self.id,
             'preview_title': title,
-            'extracted_data': json.dumps(self._prepare_preview_payload(payload), indent=4),
+            'extracted_data': json.dumps(
+                self._prepare_preview_payload(payload),
+                indent=4,
+                ensure_ascii=False,
+            ),
         })
         return {
             'type': 'ir.actions.act_window',
@@ -65,6 +69,27 @@ class HrApplicant(models.Model):
 
     def _get_cv_text(self, attachment):
         return (attachment.index_content or '').strip()
+
+    def _is_likely_image_only_pdf(self, attachment):
+        if not attachment or not self._is_pdf_attachment(attachment):
+            return False
+        return not bool(self._get_cv_text(attachment))
+
+    def _verify_cv_is_text_based(self, attachment):
+        cv_text = self._get_cv_text(attachment)
+        if cv_text:
+            return cv_text
+
+        if self._is_likely_image_only_pdf(attachment):
+            raise UserError(
+                'The selected CV appears to be image-based (scanned PDF), so no readable text was found. '
+                'Please upload a searchable PDF or run OCR first.'
+            )
+
+        raise UserError(
+            'No extracted text found in the PDF attachment. '
+            'Use a searchable PDF or enable attachment indexing in Odoo.'
+        )
 
     def _get_groq_configuration(self):
         params = self.env['ir.config_parameter'].sudo()
@@ -113,6 +138,16 @@ class HrApplicant(models.Model):
             except json.JSONDecodeError as error:
                 raise UserError('Unable to parse Groq JSON response: %s' % error) from error
 
+    def _normalize_duration_text(self, duration_text):
+        normalized = str(duration_text or '').strip()
+        if not normalized:
+            return ''
+
+        normalized = normalized.replace('—', '-').replace('–', '-')
+        normalized = re.sub(r'\s*-\s*', ' - ', normalized)
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+        return normalized
+
     def _normalize_ai_profile(self, payload):
         if not isinstance(payload, dict):
             payload = {}
@@ -129,7 +164,7 @@ class HrApplicant(models.Model):
             normalized_experiences.append({
                 'title': experience.get('title') or '',
                 'company': experience.get('company') or '',
-                'duration': experience.get('duration') or '',
+                'duration': self._normalize_duration_text(experience.get('duration')),
                 'tasks': [str(task).strip() for task in tasks if str(task).strip()],
             })
 
@@ -238,12 +273,7 @@ class HrApplicant(models.Model):
         if not attachment:
             raise UserError('No PDF CV found for this applicant.')
 
-        cv_text = self._get_cv_text(attachment)
-        if not cv_text:
-            raise UserError(
-                'No extracted text found in the PDF attachment. '
-                'Use a searchable PDF or enable attachment indexing in Odoo.'
-            )
+        cv_text = self._verify_cv_is_text_based(attachment)
 
         return self._extract_profile_with_groq(cv_text)
 
