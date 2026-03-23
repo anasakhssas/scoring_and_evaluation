@@ -38,6 +38,12 @@
                     type="object"
                     invisible="not id"
                 />
+                <button
+                    name="action_show_applicant_job_match_preview"
+                    string="Test Match Scoring"
+                    type="object"
+                    invisible="not id"
+                />
             </xpath>
         </field>
     </record>
