@@ -615,6 +615,25 @@ class HrApplicant(models.Model):
             'langues': str(explanation.get('langues') or '').strip(),
         }
 
+        feedback = payload.get('ai_feedback') if isinstance(payload.get('ai_feedback'), dict) else {}
+        fit_level = str(feedback.get('fit_level') or '').strip()
+        if fit_level not in ('Strong Fit', 'Moderate Fit', 'Weak Fit'):
+            fit_level = 'Moderate Fit'
+
+        normalized_feedback = {
+            'fit_level': fit_level,
+            'summary': str(feedback.get('summary') or '').strip(),
+            'strengths': [str(item).strip() for item in (feedback.get('strengths') or []) if str(item).strip()],
+            'risks': [str(item).strip() for item in (feedback.get('risks') or []) if str(item).strip()],
+            'ambiguities_to_verify': [
+                str(item).strip() for item in (feedback.get('ambiguities_to_verify') or []) if str(item).strip()
+            ],
+            'interview_questions': [
+                str(item).strip() for item in (feedback.get('interview_questions') or []) if str(item).strip()
+            ],
+            'recommendation': str(feedback.get('recommendation') or '').strip(),
+        }
+
         return {
             'explanation': normalized_explanation,
             'score_details': normalized_details,
@@ -626,8 +645,115 @@ class HrApplicant(models.Model):
                 if str(item).strip()
             ],
             'bonus_matches': [str(item).strip() for item in (payload.get('bonus_matches') or []) if str(item).strip()],
+            'ai_feedback': normalized_feedback,
             'status': 'done',
         }
+
+    def _build_fallback_feedback(self, score_details, matched_skills, missing_requirements):
+        total_score = int(sum((score_details or {}).values()))
+        if total_score >= 75:
+            fit_level = 'Strong Fit'
+            recommendation = 'Proceed'
+        elif total_score >= 55:
+            fit_level = 'Moderate Fit'
+            recommendation = 'Proceed with caution'
+        else:
+            fit_level = 'Weak Fit'
+            recommendation = 'Reject'
+
+        top_strengths = list(matched_skills or [])[:8]
+        top_risks = list(missing_requirements or [])[:8]
+        summary_lines = [
+            'Deterministic scoring summary for recruiter review.',
+            'Total score=%s/100.' % total_score,
+            'Technical=%s/40, Experience=%s/35, Education=%s/15, Languages=%s/10.' % (
+                score_details.get('competences_techniques', 0),
+                score_details.get('experience', 0),
+                score_details.get('education', 0),
+                score_details.get('langues', 0),
+            ),
+            'This fallback feedback is generated without LLM narrative and should be treated as a concise risk checklist.',
+            'Prioritize manual validation of level claims, recency of experience, and education equivalence before final decision.',
+        ]
+        return {
+            'fit_level': fit_level,
+            'summary': ' '.join(summary_lines),
+            'strengths': top_strengths,
+            'risks': top_risks,
+            'ambiguities_to_verify': [
+                'Are claimed proficiency levels backed by concrete project evidence?',
+                'Do date ranges in experiences contain overlaps or gaps affecting total years?',
+                'Is degree level equivalent to the required local market standard?',
+            ],
+            'interview_questions': [
+                'What type of work environment helps you perform at your best, and why?',
+                'Can you describe a conflict with a colleague and how you resolved it?',
+                'Which responsibilities in your last role did you own end-to-end?',
+            ],
+            'recommendation': recommendation,
+        }
+
+    def _generate_ai_recruiter_feedback(self, candidate_payload, job_payload, scoring_payload):
+        self.ensure_one()
+        system_prompt = (
+            'You are a senior recruiter assistant. '\
+            'Use only provided evidence. '\
+            'Do not recalculate scores. '\
+            'Highlight ambiguities explicitly. '\
+            'Be detailed and concrete for recruiter actionability. '\
+            'Write a long summary (at least 120 words) with balanced strengths and risks. '\
+            'Provide 5-8 strengths, 5-8 risks, 4-8 ambiguities_to_verify, and 6-10 interview_questions. '\
+            'interview_questions must be RH-only (behavior, motivation, communication, culture fit). '\
+            'Do not include technical, coding, architecture, or tool-specific interview questions. '\
+            'Return ONLY valid JSON with this exact structure: '\
+            '{"fit_level": "Strong Fit|Moderate Fit|Weak Fit", "summary": str, '\
+            '"strengths": [str], "risks": [str], "ambiguities_to_verify": [str], '\
+            '"interview_questions": [str], "recommendation": "Proceed|Proceed with caution|Reject"}.'
+        )
+        prompt_payload = {
+            'candidate': {
+                'name': candidate_payload.get('name'),
+                'education': candidate_payload.get('education') or {},
+                'experience_years': candidate_payload.get('experience_years') or 0.0,
+                'skills': candidate_payload.get('skills') or {},
+            },
+            'job': {
+                'title': job_payload.get('title') or '',
+                'education': job_payload.get('education') or '',
+                'required_skills': job_payload.get('required_skills') or [],
+                'required_skill_levels': job_payload.get('required_skill_levels') or {},
+                'min_experience_years': job_payload.get('min_experience_years') or 0.0,
+            },
+            'scoring': {
+                'score_total': scoring_payload.get('score_total', 0),
+                'score_details': scoring_payload.get('score_details') or {},
+                'matched_skills': scoring_payload.get('matched_skills') or [],
+                'missing_requirements': scoring_payload.get('missing_requirements') or [],
+                'explanation': scoring_payload.get('explanation') or {},
+            },
+        }
+        user_prompt = (
+            'Analyze candidate fit for recruiter decision support. '\
+            'Output detailed, evidence-based feedback and avoid generic wording. '\
+            'Interview questions must be non-technical and suitable for RH screening only. '\
+            'When evidence is missing, state uncertainty clearly in ambiguities_to_verify.\n%s'
+        ) % json.dumps(
+            prompt_payload,
+            ensure_ascii=False,
+        )
+        try:
+            ai_feedback = self._call_groq_json(system_prompt, user_prompt, max_tokens=2400)
+            normalized = self._normalize_match_score_payload({'ai_feedback': ai_feedback}).get('ai_feedback')
+            if normalized:
+                return normalized
+        except Exception:
+            pass
+
+        return self._build_fallback_feedback(
+            scoring_payload.get('score_details') or {},
+            scoring_payload.get('matched_skills') or [],
+            scoring_payload.get('missing_requirements') or [],
+        )
 
     def _score_applicant_against_job_with_groq(self, applicant_data, job_data):
         self.ensure_one()
@@ -746,7 +872,13 @@ class HrApplicant(models.Model):
             'bonus_matches': [],
             'status': 'done',
         }
-        return self._normalize_match_score_payload(payload)
+        normalized_payload = self._normalize_match_score_payload(payload)
+        normalized_payload['ai_feedback'] = self._generate_ai_recruiter_feedback(
+            candidate_payload,
+            job_payload,
+            normalized_payload,
+        )
+        return self._normalize_match_score_payload(normalized_payload)
 
     def get_applicant_job_match_data(self):
         self.ensure_one()
