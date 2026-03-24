@@ -449,15 +449,142 @@ class HrApplicant(models.Model):
         }
 
         required_skills = [str(skill_name).strip() for skill_name in job_skills.keys() if str(skill_name).strip()]
+        required_skill_levels = {
+            str(skill_name).strip(): self._skill_level_to_score5(skill_level)
+            for skill_name, skill_level in job_skills.items()
+            if str(skill_name).strip()
+        }
         job_payload = {
             'id': job_data.get('job_id'),
             'title': job_data.get('title') or '',
             'education': job_data.get('education') or '',
             'required_skills': required_skills,
+            'required_skill_levels': required_skill_levels,
             'nice_to_have': job_data.get('nice_to_have') or [],
             'min_experience_years': job_data.get('min_exp_years') or 0.0,
         }
         return candidate_payload, job_payload
+
+    def _normalize_skill_key(self, value):
+        normalized = str(value or '').strip().lower()
+        if not normalized:
+            return ''
+        normalized = re.sub(r'[^a-z0-9\s\+#\./-]', ' ', normalized)
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+        return normalized
+
+    def _round_half_up(self, value):
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            return 0
+        if numeric_value <= 0:
+            return 0
+        return int(numeric_value + 0.5)
+
+    def _build_candidate_skill_index(self, candidate_skills):
+        index = {}
+        if not isinstance(candidate_skills, dict):
+            return index
+
+        for raw_name, raw_level in candidate_skills.items():
+            normalized_name = self._normalize_skill_key(raw_name)
+            if not normalized_name:
+                continue
+            level = 0
+            try:
+                level = int(float(raw_level or 0))
+            except (TypeError, ValueError):
+                level = 0
+            index[normalized_name] = max(0, min(5, level))
+
+        return index
+
+    def _extract_required_language_skills(self, required_skills):
+        language_skills = []
+        for skill_name in required_skills:
+            normalized_name = self._normalize_skill_key(skill_name)
+            if not normalized_name:
+                continue
+            if normalized_name in self._LANGUAGE_SKILL_NAMES:
+                language_skills.append(skill_name)
+        return language_skills
+
+    def _extract_required_technical_skills(self, required_skills):
+        language_keys = {self._normalize_skill_key(name) for name in self._LANGUAGE_SKILL_NAMES}
+        tech_skills = []
+        for skill_name in required_skills:
+            normalized_name = self._normalize_skill_key(skill_name)
+            if not normalized_name:
+                continue
+            if normalized_name in language_keys:
+                continue
+            tech_skills.append(skill_name)
+        return tech_skills
+
+    def _candidate_evidence_text(self, candidate_payload):
+        chunks = []
+        for skill_name in (candidate_payload.get('skills') or {}).keys():
+            chunks.append(str(skill_name or ''))
+
+        for experience in (candidate_payload.get('experiences') or []):
+            if not isinstance(experience, dict):
+                continue
+            chunks.append(str(experience.get('title') or ''))
+            chunks.append(str(experience.get('company') or ''))
+            for task in experience.get('tasks') or []:
+                chunks.append(str(task or ''))
+            for skill_name in experience.get('skills_pertinents') or []:
+                chunks.append(str(skill_name or ''))
+
+        return ' '.join(chunks).lower()
+
+    def _extract_degree_rank(self, degree_text):
+        normalized = self._normalize_skill_key(degree_text)
+        if not normalized:
+            return 0
+
+        bac_match = re.search(r'bac\s*\+\s*(\d+)', normalized)
+        if bac_match:
+            return int(bac_match.group(1))
+
+        if 'phd' in normalized or 'doctorat' in normalized or 'doctorate' in normalized:
+            return 8
+        if 'master' in normalized or 'engineer' in normalized or 'ing' in normalized:
+            return 5
+        if 'bachelor' in normalized or 'licence' in normalized or 'license' in normalized:
+            return 3
+        if 'bts' in normalized or 'dut' in normalized or 'associate' in normalized:
+            return 2
+        if 'high school' in normalized or 'bac' in normalized:
+            return 0
+
+        return 0
+
+    def _score_education_component(self, candidate_payload, job_payload):
+        candidate_education = candidate_payload.get('education') or {}
+        candidate_degree = str(candidate_education.get('degree') or '')
+        candidate_rank = self._extract_degree_rank(candidate_degree)
+
+        required_degree_text = str(job_payload.get('education') or '')
+        required_rank = self._extract_degree_rank(required_degree_text)
+
+        if required_rank > 0 and candidate_rank < required_rank:
+            return 0, (
+                'Candidate degree below requirement '
+                '(candidate_rank=%s < required_rank=%s).' % (candidate_rank, required_rank)
+            ), ['Education level below requirement']
+
+        if required_rank > 0 and candidate_rank >= required_rank:
+            final_score = 15
+        else:
+            final_score = 0
+
+        explanation = (
+            'candidate_degree="%s", required_degree="%s", '
+            'candidate_rank=%s, required_rank=%s, education_score=%s'
+        ) % (candidate_degree, required_degree_text, candidate_rank, required_rank, final_score)
+        return final_score, explanation, []
 
     def _normalize_match_score_payload(self, payload):
         if not isinstance(payload, dict):
@@ -466,10 +593,9 @@ class HrApplicant(models.Model):
         score_details = payload.get('score_details') if isinstance(payload.get('score_details'), dict) else {}
         caps = {
             'competences_techniques': 40,
-            'experience': 25,
+            'experience': 35,
             'education': 15,
             'langues': 10,
-            'bonus': 10,
         }
 
         normalized_details = {}
@@ -487,7 +613,6 @@ class HrApplicant(models.Model):
             'experience': str(explanation.get('experience') or '').strip(),
             'education': str(explanation.get('education') or '').strip(),
             'langues': str(explanation.get('langues') or '').strip(),
-            'bonus': str(explanation.get('bonus') or '').strip(),
         }
 
         return {
@@ -507,76 +632,121 @@ class HrApplicant(models.Model):
     def _score_applicant_against_job_with_groq(self, applicant_data, job_data):
         self.ensure_one()
         candidate_payload, job_payload = self._build_scoring_inputs(applicant_data, job_data)
+        candidate_skill_index = self._build_candidate_skill_index(candidate_payload.get('skills') or {})
 
-        system_prompt = """You are an expert HR scoring assistant. Evaluate a candidate's CV against a job position and return a structured JSON score.
+        required_skills = job_payload.get('required_skills') or []
+        required_skill_levels = job_payload.get('required_skill_levels') or {}
+        tech_skills = self._extract_required_technical_skills(required_skills)
+        language_skills = self._extract_required_language_skills(required_skills)
 
-CRITICAL RULE: The integer you write in score_details for each component MUST be the EXACT result of the formula computation - nothing more, nothing less. Never round up.
+        matched_skills = []
+        missing_requirements = []
+        explanation = {}
 
-You must score the candidate across exactly 5 components. Total max score is 100 points.
+        # Component 1: Technical skills (0-40).
+        tech_points_raw = 0.0
+        if tech_skills:
+            points_per_skill = 40.0 / len(tech_skills)
+            tech_calc_parts = ['N=%s, pts_per_skill=%.2f' % (len(tech_skills), points_per_skill)]
+            for skill_name in tech_skills:
+                normalized_name = self._normalize_skill_key(skill_name)
+                level = candidate_skill_index.get(normalized_name, 0)
+                required_level = self._skill_level_to_score5(required_skill_levels.get(skill_name) or 0)
+                effective_required = max(1, required_level)
+                ratio = min(float(level) / float(effective_required), 1.0)
+                contribution = points_per_skill * ratio
+                tech_points_raw += contribution
+                tech_calc_parts.append(
+                    '%s candidate=%s required=%s -> %.2f*min(%s/%s,1)=%.2f'
+                    % (skill_name, level, effective_required, points_per_skill, level, effective_required, contribution)
+                )
+                if level >= effective_required:
+                    matched_skills.append(skill_name)
+                else:
+                    missing_requirements.append('Missing required skill: %s' % skill_name)
+                if level > 0 and level < effective_required:
+                    missing_requirements.append(
+                        'Required level not met: %s (%s/%s)' % (skill_name, level, effective_required)
+                    )
+            explanation['competences_techniques'] = ' | '.join(tech_calc_parts)
+        else:
+            explanation['competences_techniques'] = 'No required technical skills found in job payload.'
 
-COMPONENT 1: Competences techniques (0-40 pts)
-- Use only job.required_skills excluding known languages.
-- For each required tech skill, if exact key exists in candidate.skills (0..5): score_i = (40/N) * (level/5), else 0.
-- competences_techniques = round(sum(score_i)), capped at 40.
+        competences_techniques = max(0, min(40, self._round_half_up(tech_points_raw)))
 
-COMPONENT 2: Experience (0-25 pts)
-- candidate_years = numeric years from candidate experience durations.
-- required_years = job.min_experience_years.
-- If candidate_years >= required_years: experience = 15 + min((candidate_years-required_years)*5, 10), else 0.
+        # Component 2: Experience (0-35).
+        candidate_years = float(candidate_payload.get('experience_years') or 0.0)
+        required_years = float(job_payload.get('min_experience_years') or 0.0)
+        if candidate_years >= required_years:
+            experience_raw = 15.0 + min((candidate_years - required_years) * 5.0, 25.0)
+            experience_score = max(0, min(35, self._round_half_up(experience_raw)))
+            explanation['experience'] = (
+                'candidate_years=%.1f >= required_years=%.1f -> '
+                '15 + min((%.1f-%.1f)*5,25) = %.2f -> %s'
+            ) % (candidate_years, required_years, candidate_years, required_years, experience_raw, experience_score)
+        else:
+            experience_score = 0
+            explanation['experience'] = (
+                'candidate_years=%.1f < required_years=%.1f -> score=0'
+            ) % (candidate_years, required_years)
+            missing_requirements.append('Insufficient experience years')
 
-COMPONENT 3: Education (0-15 pts)
-- Use degree level and field relevance.
-
-COMPONENT 4: Langues (0-10 pts)
-- Use only required language skills from required_skills.
-- If no required languages -> 10.
-- Else for each language: contribution = (10/L) * (level/5) when present, else 0.
-- langues = round(sum(contributions)), capped at 10.
-
-COMPONENT 5: Bonus / nice-to-have (0-10 pts)
-- Use job.nice_to_have.
-- If empty -> 0.
-- Else each matched nice-to-have in candidate experiences/tasks or candidate.skills gives (10/B).
-- bonus = round(sum(contributions)), capped at 10.
-
-FINAL RULES:
-- score_total = competences_techniques + experience + education + langues + bonus.
-- Return ONLY valid JSON.
-
-OUTPUT FORMAT:
-{
-  "explanation": {
-    "competences_techniques": "string",
-    "experience": "string",
-    "education": "string",
-    "langues": "string",
-    "bonus": "string"
-  },
-  "score_details": {
-    "competences_techniques": 0,
-    "experience": 0,
-    "education": 0,
-    "langues": 0,
-    "bonus": 0
-  },
-  "score_total": 0,
-  "matched_skills": ["string"],
-  "missing_requirements": ["string"],
-  "bonus_matches": ["string"],
-  "status": "done"
-}"""
-
-        user_prompt = (
-            'Evaluate the following candidate against the job position and return only the JSON score object.\n\n'
-            'JOB:\n%s\n\n'
-            'CANDIDATE:\n%s'
-        ) % (
-            json.dumps(job_payload, indent=2, ensure_ascii=False),
-            json.dumps(candidate_payload, indent=2, ensure_ascii=False),
+        # Component 3: Education (0-15).
+        education_score, education_explanation, education_missing = self._score_education_component(
+            candidate_payload,
+            job_payload,
         )
+        explanation['education'] = education_explanation
+        missing_requirements.extend(education_missing)
 
-        ai_payload = self._call_groq_json(system_prompt, user_prompt, max_tokens=2200)
-        return self._normalize_match_score_payload(ai_payload)
+        # Component 4: Languages (0-10).
+        lang_points_raw = 0.0
+        if language_skills:
+            points_per_language = 10.0 / len(language_skills)
+            language_parts = ['L=%s, pts_per_lang=%.2f' % (len(language_skills), points_per_language)]
+            for language_name in language_skills:
+                normalized_name = self._normalize_skill_key(language_name)
+                level = candidate_skill_index.get(normalized_name, 0)
+                required_level = self._skill_level_to_score5(required_skill_levels.get(language_name) or 0)
+                effective_required = max(1, required_level)
+                ratio = min(float(level) / float(effective_required), 1.0)
+                contribution = points_per_language * ratio
+                lang_points_raw += contribution
+                language_parts.append(
+                    '%s candidate=%s required=%s -> %.2f*min(%s/%s,1)=%.2f'
+                    % (language_name, level, effective_required, points_per_language, level, effective_required, contribution)
+                )
+                if level >= effective_required:
+                    matched_skills.append(language_name)
+                else:
+                    missing_requirements.append('Missing required language: %s' % language_name)
+                if level > 0 and level < effective_required:
+                    missing_requirements.append(
+                        'Required level not met: %s (%s/%s)' % (language_name, level, effective_required)
+                    )
+            explanation['langues'] = ' | '.join(language_parts)
+            langues_score = max(0, min(10, self._round_half_up(lang_points_raw)))
+        else:
+            langues_score = 10
+            explanation['langues'] = 'No required language in job.required_skills -> score=10.'
+
+        score_details = {
+            'competences_techniques': competences_techniques,
+            'experience': experience_score,
+            'education': education_score,
+            'langues': langues_score,
+        }
+
+        payload = {
+            'explanation': explanation,
+            'score_details': score_details,
+            'score_total': sum(score_details.values()),
+            'matched_skills': sorted(set(matched_skills), key=lambda item: item.lower()),
+            'missing_requirements': sorted(set(missing_requirements), key=lambda item: item.lower()),
+            'bonus_matches': [],
+            'status': 'done',
+        }
+        return self._normalize_match_score_payload(payload)
 
     def get_applicant_job_match_data(self):
         self.ensure_one()
