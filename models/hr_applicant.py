@@ -1,11 +1,12 @@
 import json
 import os
 import re
+from html import escape
 from datetime import date
 
 import requests
 
-from odoo import models
+from odoo import fields, models
 from odoo.exceptions import UserError
 
 
@@ -18,6 +19,35 @@ class HrApplicant(models.Model):
         'arabic', 'french', 'english', 'spanish', 'german', 'italian', 'portuguese',
         'mandarin', 'chinese', 'japanese', 'korean', 'russian', 'dutch', 'turkish',
     }
+
+    score_total = fields.Integer(string='Score Total', readonly=True, copy=False)
+    ai_feedback = fields.Html(string='AI Feedback', readonly=True, copy=False)
+    applicant_extracted_json = fields.Text(string='Applicant Extracted JSON', readonly=True, copy=False)
+
+    def _ai_feedback_to_html(self, feedback):
+        if not isinstance(feedback, dict):
+            return ''
+
+        def _list_html(values):
+            items = [str(item).strip() for item in (values or []) if str(item).strip()]
+            if not items:
+                return '<p><i>None</i></p>'
+            return '<ul>%s</ul>' % ''.join('<li>%s</li>' % escape(item) for item in items)
+
+        fit_level = escape(str(feedback.get('fit_level') or ''))
+        recommendation = escape(str(feedback.get('recommendation') or ''))
+        summary = escape(str(feedback.get('summary') or ''))
+
+        sections = [
+            '<p><b>Fit Level:</b> %s</p>' % fit_level,
+            '<p><b>Recommendation:</b> %s</p>' % recommendation,
+            '<p><b>Summary</b><br/>%s</p>' % summary,
+            '<p><b>Strengths</b></p>%s' % _list_html(feedback.get('strengths')),
+            '<p><b>Risks</b></p>%s' % _list_html(feedback.get('risks')),
+            '<p><b>Ambiguities To Verify</b></p>%s' % _list_html(feedback.get('ambiguities_to_verify')),
+            '<p><b>RH Interview Questions</b></p>%s' % _list_html(feedback.get('interview_questions')),
+        ]
+        return ''.join(sections)
 
     def _prepare_preview_payload(self, payload):
         if isinstance(payload, dict):
@@ -889,6 +919,11 @@ class HrApplicant(models.Model):
 
         job_data = job_list[0]
         match_data = self._score_applicant_against_job_with_groq(applicant_data, job_data)
+        self.write({
+            'score_total': int(match_data.get('score_total') or 0),
+            'ai_feedback': self._ai_feedback_to_html(match_data.get('ai_feedback') or {}),
+            'applicant_extracted_json': json.dumps(applicant_data or {}, ensure_ascii=False, indent=2),
+        })
         return {
             'applicant': applicant_data,
             'job': job_data,

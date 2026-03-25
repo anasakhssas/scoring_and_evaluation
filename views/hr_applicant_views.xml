@@ -26,24 +26,20 @@
         <field name="arch" type="xml">
             <xpath expr="//form/header" position="inside">
                 <button
-                    name="action_show_job_extraction_preview"
-                    string="Test Job Extraction"
-                    type="object"
-                    class="oe_highlight"
-                    invisible="not id"
-                />
-                <button
-                    name="action_show_applicant_extraction_preview"
-                    string="Test Applicant Extraction"
-                    type="object"
-                    invisible="not id"
-                />
-                <button
                     name="action_show_applicant_job_match_preview"
-                    string="Test Match Scoring"
+                    string="Analyze Candidate Fit"
                     type="object"
+                    class="oe_highlight btn-primary"
+                    icon="fa-line-chart"
                     invisible="not id"
                 />
+            </xpath>
+            <xpath expr="//form/sheet" position="inside">
+                <group string="Scoring Output">
+                    <field name="score_total" readonly="1"/>
+                    <field name="ai_feedback" widget="html" readonly="1"/>
+                    <field name="applicant_extracted_json" widget="text" readonly="1"/>
+                </group>
             </xpath>
         </field>
     </record>
