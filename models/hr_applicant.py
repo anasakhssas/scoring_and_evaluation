@@ -860,26 +860,29 @@ class HrApplicant(models.Model):
     def _score_applicant_against_job_with_groq(self, applicant_data, job_data):
         self.ensure_one()
         system_prompt = (
-            'Tu es un recruteur senior specialise en evaluation de profils. '
-            'Ta mission est de determiner si le candidat correspond au poste, avec une logique stricte, explicable et basee uniquement sur les donnees fournies. '
-            'Le matching doit etre STRICTEMENT relatif au poste extrait dans job_data (pas une evaluation generale du candidat). '
-            'Traite job_data comme source d autorite pour les exigences: title, skills, min_exp_years, education, major. '
-            'Regles de decision: '
-            '1) N invente aucune information: si une preuve n existe pas, considere-la comme non prouvee. '
-            '2) Fais un matching semantique des competences (synonymes, formulations proches, outils equivalents), sans sur-evaluer. '
-            '3) Distingue exigences critiques, exigences importantes et bonus. '
-            '4) Penalise fortement l absence d exigences critiques. '
-            '5) Base la conclusion sur preuves concretes: experiences, niveau de competences, education, langues, certifications. '
-            '6) Si job_data ne contient pas une exigence, n en cree pas. Si une exigence du job est vide/ambigu, mentionne-la dans ambiguities_to_verify. '
-            'Ponderation obligatoire (total 100): competences_techniques=40, experience=35, education=15, langues=10. '
-            'Interpretation fit_level: Adequation forte si score>=75 sans lacune critique; Adequation moderee si score 50-74 ou incertitudes importantes; Adequation faible si score<50 ou lacunes critiques. '
-            'Retourne UNIQUEMENT un objet JSON valide avec EXACTEMENT cette structure:\n'
+            'Tu es un ATS (Applicant Tracking System) IA d\'élite et un recruteur technique intransigeant. '
+            'Ta mission est d\'évaluer de manière stricte, factuelle et mathématique l\'adéquation d\'un candidat par rapport à un poste précis.\n\n'
+            'RÈGLES ABSOLUES :\n'
+            '1. ZERO HALLUCINATION : Base-toi EXCLUSIVEMENT sur les données fournies. Si une compétence n\'est pas écrite, le candidat ne l\'a pas.\n'
+            '2. AUTORITÉ DU POSTE : Le JSON "job" dicte les règles. Le matching doit être strictement relatif aux exigences de "job_data".\n'
+            '3. BIAIS DE COMPLAISANCE INTERDIT : Ne sois pas généreux. Un score parfait (100) est quasiment impossible.\n'
+            '4. RÈGLE DES CRITÈRES MANQUANTS : Si le job n\'exige pas de diplôme (education) ou de langue (langues), accorde le maximum de points à ces catégories pour ne pas pénaliser le candidat.\n\n'
+            'BARÈME DE NOTATION STRICT (Total 100) :\n'
+            '- competences_techniques (Max 40) : 40=Maîtrise totale des prérequis core ; 20=Couvre 50% des prérequis ou maîtrise théorique ; 0=Aucun prérequis technique.\n'
+            '- experience (Max 35) : 35=Dépasse largement min_exp_years dans un rôle identique ; 20=Atteint tout juste min_exp_years ; 0=Expérience insuffisante ou non pertinente.\n'
+            '- education (Max 15) : 15=Diplôme et domaine correspondent exactement ; 5=Niveau OK mais domaine différent ; 0=Ne répond pas à l\'exigence.\n'
+            '- langues (Max 10) : 10=Niveau requis prouvé ou langue maternelle ; 0=Langue requise absente.\n\n'
+            'INTERPRÉTATION DU FIT LEVEL :\n'
+            '- "Adequation forte" : Score >= 75 ET aucun manque critique bloquant.\n'
+            '- "Adequation moderee" : Score 50-74, OU manque sur une compétence importante mais formable.\n'
+            '- "Adequation faible" : Score < 50, OU manque absolu sur un prérequis critique (ex: années d\'expérience très insuffisantes).\n\n'
+            'Format de sortie : UNIQUEMENT un objet JSON valide. L\'objet "explanation" DOIT apparaître avant "score_details" pour forcer le raisonnement mathématique.\n'
             '{\n'
             '  "explanation": {\n'
-            '    "competences_techniques": "string",\n'
-            '    "experience": "string",\n'
-            '    "education": "string",\n'
-            '    "langues": "string"\n'
+            '    "competences_techniques": "Raisonnement factuel de la note",\n'
+            '    "experience": "Comparaison stricte des années et de la pertinence",\n'
+            '    "education": "Analyse du diplôme",\n'
+            '    "langues": "Analyse du niveau de langue"\n'
             '  },\n'
             '  "score_details": {\n'
             '    "competences_techniques": <int 0..40>,\n'
@@ -888,20 +891,18 @@ class HrApplicant(models.Model):
             '    "langues": <int 0..10>\n'
             '  },\n'
             '  "matched_skills": ["string"],\n'
-            '  "missing_requirements": ["string"],\n'
+            '  "missing_requirements": ["string (Omission critique uniquement)"],\n'
             '  "bonus_matches": ["string"],\n'
             '  "ai_feedback": {\n'
             '    "fit_level": "Adequation forte|Adequation moderee|Adequation faible",\n'
-            '    "summary": "string",\n'
+            '    "summary": "Résumé exécutif direct et sans fioritures",\n'
             '    "strengths": ["string"],\n'
             '    "risks": ["string"],\n'
-            '    "ambiguities_to_verify": ["string"],\n'
-            '    "interview_questions": ["string"],\n'
+            '    "ambiguities_to_verify": ["string (ex: Chevauchement de dates, niveau réel de l\'outil X)"],\n'
+            '    "interview_questions": ["string (Questions techniques dures basées sur les risques)"],\n'
             '    "recommendation": "Poursuivre|Poursuivre avec prudence|Rejeter"\n'
             '  }\n'
-            '}\n'
-            'Contraintes strictes: pas de markdown, pas de texte hors JSON, pas de cles supplementaires. '
-            'Le score_total est implicite et sera calcule en additionnant les 4 sous-scores.'
+            '}'
         )
 
         prompt_payload = {
@@ -910,19 +911,16 @@ class HrApplicant(models.Model):
         }
 
         user_prompt = (
-            'Evalue l adequation du candidat UNIQUEMENT par rapport a CE job extrait (job_data).\n'
-            'Objectif: determiner si le candidat peut performer sur ce role precis, pas sur un poste general.\n'
-            'Important: job_data est la reference obligatoire des exigences du poste.\n'
-            'Instructions d analyse: '\
-            '1) Compare candidate.skills et job.skills avec matching semantique et niveau reel. '\
-            '2) Verifie experience_years vs job.min_exp_years et la pertinence des experiences pour job.title. '\
-            '3) Verifie education du candidat vs job.education et job.major. '\
-            '4) Verifie langues requises et niveau probable. '\
-            '5) Identifie clairement competences couvertes, manques critiques, manques non bloquants, et bonus. '\
-            '6) Mets dans ambiguities_to_verify tout point ambigu, non prouve ou contradictoire. '\
-            '7) Recommendation stricte: Rejeter si manques critiques majeurs; Poursuivre avec prudence si fit moyen ou preuves insuffisantes; Poursuivre si fit solide et risques faibles.\n'
-            'Base toi uniquement sur ces donnees (aucune hypothese externe).\n'
-            'Donnees (JSON):\n%s'
+            'Exécute une comparaison approfondie, stricte et détaillée entre le profil du candidat et les exigences du poste.\n\n'
+            'ÉTAPES DE COMPARAISON OBLIGATOIRES (intègre ce raisonnement dans les clés "explanation") :\n'
+            '1. COMPARAISON TECHNIQUE : Compare rigoureusement les compétences du candidat ("candidate.skills") avec les prérequis du poste ("job.skills"). Identifie les correspondances exactes, les équivalences sémantiques (ex: Vue.js = Vue), les compétences manquantes critiques, et les compétences bonus.\n'
+            '2. COMPARAISON DE L\'EXPÉRIENCE : Compare mathématiquement le nombre d\'années ("candidate.experience_years") avec le minimum requis ("job.min_exp_years"). Ensuite, compare le contenu des missions ("candidate.experiences") avec la nature du poste ("job.title") pour évaluer la pertinence réelle de ces années.\n'
+            '3. COMPARAISON DE L\'ÉDUCATION : Compare le diplôme et la spécialité du candidat ("candidate.education") avec les exigences académiques du poste ("job.education" et "job.major").\n'
+            '4. COMPARAISON DES LANGUES : Compare les niveaux de langue du candidat avec les prérequis linguistiques du poste (en utilisant l\'échelle A1-C2).\n'
+            '5. SYNTHÈSE DES ÉCARTS : Dresse la liste exacte des manques bloquants ("missing_requirements") et des atouts supplémentaires ("bonus_matches").\n'
+            '6. DÉCISION DES SCORES : En te basant strictement sur le résultat matériel de ces 4 comparaisons, attribue les sous-scores définitifs dans "score_details".\n'
+            '7. CRÉATION DES QUESTIONS : Génère des "interview_questions" ultra-ciblées basées UNIQUEMENT sur les manques, les zones d\'ombre ou les chevauchements de dates identifiés lors de la comparaison de l\'expérience et des compétences.\n\n'
+            'Voici les données JSON à comparer :\n%s'
         ) % json.dumps(prompt_payload, ensure_ascii=False)
 
         try:
