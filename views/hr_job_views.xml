@@ -5,8 +5,11 @@
         <field name="model">hr.job</field>
         <field name="inherit_id" ref="hr_recruitment.hr_job_survey"/>
         <field name="arch" type="xml">
+            <xpath expr="//field[@name='expected_degree']" position="attributes">
+                <attribute name="options">{'no_create': True, 'no_create_edit': True, 'no_open': True}</attribute>
+            </xpath>
             <xpath expr="//field[@name='expected_degree']" position="after">
-                <field name="major"/>
+                <field name="major_id" options="{'no_create': True, 'no_create_edit': True, 'no_open': True}"/>
                 <field name="min_exp_years"/>
             </xpath>
         </field>

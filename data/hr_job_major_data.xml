@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+
+    <record id="hr_job_major_computer_science" model="hr.job.major">
+        <field name="name">Informatique</field>
+    </record>
+    <record id="hr_job_major_software_engineering" model="hr.job.major">
+        <field name="name">Génie Logiciel</field>
+    </record>
+    <record id="hr_job_major_data_science" model="hr.job.major">
+        <field name="name">Science des Données</field>
+    </record>
+    <record id="hr_job_major_information_systems" model="hr.job.major">
+        <field name="name">Systèmes d'Information</field>
+    </record>
+    <record id="hr_job_major_cybersecurity" model="hr.job.major">
+        <field name="name">Cybersécurité</field>
+    </record>
+    <record id="hr_job_major_artificial_intelligence" model="hr.job.major">
+        <field name="name">Intelligence Artificielle</field>
+    </record>
+    <record id="hr_job_major_cloud_computing" model="hr.job.major">
+        <field name="name">Cloud Computing</field>
+    </record>
+
+    <record id="hr_job_major_business_administration" model="hr.job.major">
+        <field name="name">Administration des Affaires</field>
+    </record>
+    <record id="hr_job_major_finance" model="hr.job.major">
+        <field name="name">Finance</field>
+    </record>
+    <record id="hr_job_major_marketing" model="hr.job.major">
+        <field name="name">Marketing</field>
+    </record>
+    <record id="hr_job_major_human_resources" model="hr.job.major">
+        <field name="name">Ressources Humaines</field>
+    </record>
+    <record id="hr_job_major_accounting" model="hr.job.major">
+        <field name="name">Comptabilité</field>
+    </record>
+    <record id="hr_job_major_supply_chain" model="hr.job.major">
+        <field name="name">Gestion de la Chaîne Logistique</field>
+    </record>
+    <record id="hr_job_major_international_business" model="hr.job.major">
+        <field name="name">Commerce International</field>
+    </record>
+    <record id="hr_job_major_entrepreneurship" model="hr.job.major">
+        <field name="name">Entrepreneuriat</field>
+    </record>
+
+    <record id="hr_job_major_civil_engineering" model="hr.job.major">
+        <field name="name">Génie Civil</field>
+    </record>
+    <record id="hr_job_major_mechanical_engineering" model="hr.job.major">
+        <field name="name">Génie Mécanique</field>
+    </record>
+    <record id="hr_job_major_electrical_engineering" model="hr.job.major">
+        <field name="name">Génie Électrique</field>
+    </record>
+    <record id="hr_job_major_chemical_engineering" model="hr.job.major">
+        <field name="name">Génie Chimique</field>
+    </record>
+    <record id="hr_job_major_industrial_engineering" model="hr.job.major">
+        <field name="name">Génie Industriel</field>
+    </record>
+    <record id="hr_job_major_aerospace_engineering" model="hr.job.major">
+        <field name="name">Génie Aérospatial</field>
+    </record>
+    <record id="hr_job_major_architecture" model="hr.job.major">
+        <field name="name">Architecture</field>
+    </record>
+
+    <record id="hr_job_major_psychology" model="hr.job.major">
+        <field name="name">Psychologie</field>
+    </record>
+    <record id="hr_job_major_sociology" model="hr.job.major">
+        <field name="name">Sociologie</field>
+    </record>
+    <record id="hr_job_major_political_science" model="hr.job.major">
+        <field name="name">Sciences Politiques</field>
+    </record>
+    <record id="hr_job_major_economics" model="hr.job.major">
+        <field name="name">Économie</field>
+    </record>
+    <record id="hr_job_major_communications" model="hr.job.major">
+        <field name="name">Communication</field>
+    </record>
+    <record id="hr_job_major_history" model="hr.job.major">
+        <field name="name">Histoire</field>
+    </record>
+    <record id="hr_job_major_languages" model="hr.job.major">
+        <field name="name">Langues et Linguistique</field>
+    </record>
+
+    <record id="hr_job_major_biology" model="hr.job.major">
+        <field name="name">Biologie</field>
+    </record>
+    <record id="hr_job_major_chemistry" model="hr.job.major">
+        <field name="name">Chimie</field>
+    </record>
+    <record id="hr_job_major_physics" model="hr.job.major">
+        <field name="name">Physique</field>
+    </record>
+    <record id="hr_job_major_mathematics" model="hr.job.major">
+        <field name="name">Mathématiques</field>
+    </record>
+    <record id="hr_job_major_environmental_science" model="hr.job.major">
+        <field name="name">Sciences de l'Environnement</field>
+    </record>
+
+    <record id="hr_job_major_medicine" model="hr.job.major">
+        <field name="name">Médecine</field>
+    </record>
+    <record id="hr_job_major_nursing" model="hr.job.major">
+        <field name="name">Soins Infirmiers</field>
+    </record>
+    <record id="hr_job_major_public_health" model="hr.job.major">
+        <field name="name">Santé Publique</field>
+    </record>
+    <record id="hr_job_major_pharmacy" model="hr.job.major">
+        <field name="name">Pharmacie</field>
+    </record>
+    <record id="hr_job_major_dentistry" model="hr.job.major">
+        <field name="name">Médecine Dentaire</field>
+    </record>
+
+    <record id="hr_job_major_law" model="hr.job.major">
+        <field name="name">Droit</field>
+    </record>
+    <record id="hr_job_major_graphic_design" model="hr.job.major">
+        <field name="name">Design Graphique</field>
+    </record>
+    <record id="hr_job_major_fine_arts" model="hr.job.major">
+        <field name="name">Beaux-Arts</field>
+    </record>
+    <record id="hr_job_major_journalism" model="hr.job.major">
+        <field name="name">Journalisme</field>
+    </record>
+    <record id="hr_job_major_hospitality" model="hr.job.major">
+        <field name="name">Gestion Hôtelière</field>
+    </record>
+    <record id="hr_job_major_agriculture" model="hr.job.major">
+        <field name="name">Agriculture et Agronomie</field>
+    </record>
+
+</odoo>

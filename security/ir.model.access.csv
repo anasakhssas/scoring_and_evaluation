@@ -1,3 +1,5 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
 access_extract_job_info,extract.job.info,model_extract_job_info,base.group_user,1,1,1,1
 access_applicant_extraction_preview_wizard,applicant.extraction.preview.wizard,model_applicant_extraction_preview_wizard,base.group_user,1,1,1,1
+access_hr_job_major_user,hr.job.major.user,model_hr_job_major,base.group_user,1,0,0,0
+access_hr_job_major_manager,hr.job.major.manager,model_hr_job_major,hr_recruitment.group_hr_recruitment_manager,1,1,1,1
