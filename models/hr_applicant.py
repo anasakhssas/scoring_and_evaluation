@@ -32,6 +32,26 @@ class HrApplicant(models.Model):
         'arabic', 'french', 'english', 'spanish', 'german', 'italian', 'portuguese',
         'mandarin', 'chinese', 'japanese', 'korean', 'russian', 'dutch', 'turkish',
     }
+    _LANGUAGE_SKILL_ALIASES = {
+        'anglais': 'english',
+        'francais': 'french',
+        'espagnol': 'spanish',
+        'allemand': 'german',
+        'italien': 'italian',
+        'portugais': 'portuguese',
+        'arabe': 'arabic',
+        'chinois': 'chinese',
+        'mandarin chinese': 'mandarin',
+        'japonais': 'japanese',
+        'coreen': 'korean',
+        'russe': 'russian',
+        'neerlandais': 'dutch',
+        'turc': 'turkish',
+        'langue anglaise': 'english',
+        'langue francaise': 'french',
+        'french language': 'french',
+        'english language': 'english',
+    }
     _SKILL_SYNONYMS = {
         'js': 'javascript',
         'node': 'node.js',
@@ -519,7 +539,7 @@ class HrApplicant(models.Model):
         return round(total_years, 1)
 
     def _is_language_skill(self, skill_name):
-        return str(skill_name or '').strip().lower() in self._LANGUAGE_SKILL_NAMES
+        return self._canonical_skill_name(skill_name) in self._LANGUAGE_SKILL_NAMES
 
     def _normalize_general_skill_level(self, raw_level):
         if raw_level is None:
@@ -553,6 +573,30 @@ class HrApplicant(models.Model):
         level_text = str(raw_level).strip().upper()
         if not level_text:
             return ''
+
+        textual_map = {
+            'NATIVE': 'C2',
+            'MOTHER TONGUE': 'C2',
+            'BILINGUAL': 'C2',
+            'FLUENT': 'C1',
+            'ADVANCED': 'C1',
+            'PROFESSIONAL': 'B2',
+            'INTERMEDIATE': 'B1',
+            'ELEMENTARY': 'A2',
+            'BEGINNER': 'A1',
+            'MATERNELLE': 'C2',
+            'BILINGUE': 'C2',
+            'COURANT': 'C1',
+            'PROFESSIONNEL': 'B2',
+            'DEBUTANT': 'A1',
+        }
+        mapped = textual_map.get(level_text)
+        if mapped:
+            return mapped
+
+        compact = re.sub(r'\s+', '', level_text)
+        if compact in self._LANGUAGE_LEVELS:
+            return compact
 
         if level_text in self._LANGUAGE_LEVELS:
             return level_text
@@ -607,14 +651,17 @@ class HrApplicant(models.Model):
             normalized_name = str(skill_name).strip()
             if not normalized_name:
                 continue
+            canonical_name = self._canonical_skill_name(normalized_name)
+            if not canonical_name:
+                continue
 
-            if self._is_language_skill(normalized_name):
+            if self._is_language_skill(canonical_name):
                 normalized_level = self._normalize_language_skill_level(skill_level)
             else:
                 normalized_level = self._normalize_general_skill_level(skill_level)
 
             if normalized_level:
-                normalized_skills[normalized_name] = normalized_level
+                normalized_skills[canonical_name] = normalized_level
 
         certifications = payload.get('certification')
         if not isinstance(certifications, list):
@@ -654,6 +701,8 @@ class HrApplicant(models.Model):
             '"skills": {"skill_name": str_level}}. '\
             'For technical and soft skills, use exactly one of: Beginner, Elementary, Intermediate, Advanced, Expert. '\
             'For language skills, use exactly one of: A1, A2, B1, B2, C1, C2. '\
+            'Always include spoken languages inside "skills" with CEFR levels when available. '\
+            'Use canonical language names when possible: english, french, arabic, spanish, german, italian, portuguese. '\
             'Do not include markdown, comments, or explanations.'
         )
 
@@ -768,7 +817,9 @@ class HrApplicant(models.Model):
         normalized = self._normalize_skill_key(value)
         if not normalized:
             return ''
-        return self._SKILL_SYNONYMS.get(normalized, normalized)
+        normalized = re.sub(r'^(language|langue)\s+', '', normalized).strip()
+        normalized = self._SKILL_SYNONYMS.get(normalized, normalized)
+        return self._LANGUAGE_SKILL_ALIASES.get(normalized, normalized)
 
     def _round_half_up(self, value):
         try:
@@ -953,7 +1004,14 @@ class HrApplicant(models.Model):
             'status': 'done',
         }
 
-    def _build_fallback_feedback(self, score_details, matched_skills, missing_requirements):
+    def _build_fallback_feedback(
+        self,
+        score_details,
+        matched_skills,
+        missing_requirements,
+        required_skills=None,
+        candidate_skills=None,
+    ):
         total_score = int(sum((score_details or {}).values()))
         if total_score >= 75:
             fit_level = 'Adequation forte'
@@ -979,6 +1037,62 @@ class HrApplicant(models.Model):
             'Ce retour de secours est genere sans narration LLM et doit etre traite comme une checklist concise des risques.',
             'Prioriser la validation manuelle des niveaux declares, de la recence de l experience et de l equivalence des diplomes avant decision finale.',
         ]
+
+        required_skill_names = [str(item).strip() for item in (required_skills or []) if str(item).strip()]
+        candidate_skill_names = []
+        if isinstance(candidate_skills, dict):
+            candidate_skill_names = [str(item).strip() for item in candidate_skills.keys() if str(item).strip()]
+        elif isinstance(candidate_skills, list):
+            candidate_skill_names = [str(item).strip() for item in candidate_skills if str(item).strip()]
+
+        missing_skill_names = []
+        for requirement in (missing_requirements or []):
+            text = str(requirement or '').strip()
+            if text.startswith('Missing required skill:'):
+                missing_skill_names.append(text.split(':', 1)[1].strip())
+            elif text.startswith('Missing required language:'):
+                missing_skill_names.append(text.split(':', 1)[1].strip())
+            elif text.startswith('Required level not met:'):
+                missing_skill_names.append(text.split(':', 1)[1].split('(', 1)[0].strip())
+
+        interview_questions = []
+        for skill_name in missing_skill_names[:4]:
+            interview_questions.append(
+                'Le poste exige %s. Pouvez vous decrire une realisation recente ou vous avez applique cette competence, avec le contexte, votre role et le resultat ?'
+                % skill_name
+            )
+
+        for skill_name in list(matched_skills or [])[:3]:
+            interview_questions.append(
+                'Vous semblez maitriser %s. Quel niveau reel estimez vous avoir aujourd hui et quels exemples concrets le prouvent ?'
+                % skill_name
+            )
+
+        for skill_name in required_skill_names[:3]:
+            if len(interview_questions) >= 10:
+                break
+            interview_questions.append(
+                'Pour %s, comment prioriseriez vous votre montee en competence durant les 90 premiers jours sur ce poste ?'
+                % skill_name
+            )
+
+        if not interview_questions:
+            seed_skills = (required_skill_names or candidate_skill_names)[:6]
+            for skill_name in seed_skills:
+                interview_questions.append(
+                    'Quelle est votre experience la plus representative sur %s et quels indicateurs permettent de mesurer votre impact ?'
+                    % skill_name
+                )
+
+        if len(interview_questions) < 6:
+            interview_questions.extend([
+                'Parmi les competences requises du poste, lesquelles maitrisez vous le mieux aujourd hui et lesquelles necessitent un renforcement ?',
+                'Donnez un exemple de situation ou vous avez du transferer une competence maitrisee vers un nouveau contexte metier.',
+                'Comment valider rapidement votre niveau reel sur les competences critiques de ce poste pendant la periode d integration ?',
+            ])
+
+        interview_questions = interview_questions[:10]
+
         return {
             'fit_level': fit_level,
             'summary': ' '.join(summary_lines),
@@ -989,11 +1103,7 @@ class HrApplicant(models.Model):
                 'Les periodes d experience contiennent elles des chevauchements ou des trous impactant le total d annees ?',
                 'Le niveau de diplome est il equivalent au standard local requis ?',
             ],
-            'interview_questions': [
-                'Quel type d environnement de travail vous permet de donner le meilleur de vous meme, et pourquoi ?',
-                'Pouvez vous decrire un conflit avec un collegue et la maniere dont vous l avez resolu ?',
-                'Quelles responsabilites aviez vous de bout en bout dans votre dernier poste ?',
-            ],
+            'interview_questions': interview_questions,
             'recommendation': recommendation,
         }
 
@@ -1007,8 +1117,10 @@ class HrApplicant(models.Model):
             'Sois detaille et concret pour aider la decision recruteur. '\
             'Ecris un resume long (au moins 120 mots) avec un equilibre entre points forts et risques. '\
             'Fournis 5-8 strengths, 5-8 risks, 4-8 ambiguities_to_verify et 6-10 interview_questions. '\
-            'interview_questions doit etre strictement RH (comportement, motivation, communication, culture fit). '\
-            'N inclus aucune question technique, de code, d architecture ou liee aux outils. '\
+            'interview_questions doit etre directement lie a: (a) les competences requises du poste, '
+            '(b) les competences declarees/maitrisees par le candidat, et '
+            '(c) les ecarts de niveau identifies. '\
+            'Evite les questions RH generales non reliees aux skills. '\
             'Tous les textes et valeurs doivent etre en francais. '\
             'Retourne UNIQUEMENT un JSON valide avec cette structure exacte: '\
             '{"fit_level": "Adequation forte|Adequation moderee|Adequation faible", "summary": str, '\
@@ -1040,7 +1152,8 @@ class HrApplicant(models.Model):
         user_prompt = (
             'Analyse l adequation du candidat pour la prise de decision RH. '\
             'Produis un retour detaille, base sur des preuves, et evite les formulations generiques. '\
-            'Les questions d entretien doivent etre non techniques et adaptees uniquement a un screening RH. '\
+            'Les questions d entretien doivent cibler les competences requises du poste et les competences maitrisees par le candidat, '
+            'avec des questions de verification de niveau et d application concrete. '\
             'Quand des preuves manquent, exprime clairement l incertitude dans ambiguities_to_verify. '\
             'Ecris tout en francais.\n%s'
         ) % json.dumps(
@@ -1059,6 +1172,8 @@ class HrApplicant(models.Model):
             scoring_payload.get('score_details') or {},
             scoring_payload.get('matched_skills') or [],
             scoring_payload.get('missing_requirements') or [],
+            job_payload.get('required_skills') or [],
+            candidate_payload.get('skills') or {},
         )
 
     def _score_applicant_against_job_with_groq(self, applicant_data, job_data):
