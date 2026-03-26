@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 from html import escape
@@ -6,23 +7,102 @@ from datetime import date
 
 import requests
 
-from odoo import fields, models
+from odoo import api, fields, models
 from odoo.exceptions import UserError
+
+_logger = logging.getLogger(__name__)
 
 
 class HrApplicant(models.Model):
     _inherit = 'hr.applicant'
     _GROQ_CHAT_COMPLETIONS_URL = 'https://api.groq.com/openai/v1/chat/completions'
+    _CV_EXTRACTION_CHUNK_SIZE = 16000
+    _CV_EXTRACTION_CHUNK_OVERLAP = 1000
+    _CV_EXTRACTION_MAX_CHUNKS = 3
     _GENERAL_SKILL_LEVELS = ('Beginner', 'Elementary', 'Intermediate', 'Advanced', 'Expert')
+    _GENERAL_LEVEL_BY_SCORE5 = {
+        1: 'Beginner',
+        2: 'Elementary',
+        3: 'Intermediate',
+        4: 'Advanced',
+        5: 'Expert',
+    }
     _LANGUAGE_LEVELS = ('A1', 'A2', 'B1', 'B2', 'C1', 'C2')
     _LANGUAGE_SKILL_NAMES = {
         'arabic', 'french', 'english', 'spanish', 'german', 'italian', 'portuguese',
         'mandarin', 'chinese', 'japanese', 'korean', 'russian', 'dutch', 'turkish',
     }
+    _SKILL_SYNONYMS = {
+        'js': 'javascript',
+        'node': 'node.js',
+        'nodejs': 'node.js',
+        'reactjs': 'react',
+        'react.js': 'react',
+        'vuejs': 'vue',
+        'vue.js': 'vue',
+        'ts': 'typescript',
+        'py': 'python',
+        'postgres': 'postgresql',
+        'mongo': 'mongodb',
+        'c sharp': 'c#',
+        'csharp': 'c#',
+        'dotnet': '.net',
+    }
+    _MONTH_NAME_TO_NUMBER = {
+        'jan': 1, 'january': 1,
+        'feb': 2, 'february': 2,
+        'mar': 3, 'march': 3,
+        'apr': 4, 'april': 4,
+        'may': 5,
+        'jun': 6, 'june': 6,
+        'jul': 7, 'july': 7,
+        'aug': 8, 'august': 8,
+        'sep': 9, 'sept': 9, 'september': 9,
+        'oct': 10, 'october': 10,
+        'nov': 11, 'november': 11,
+        'dec': 12, 'december': 12,
+    }
 
     score_total = fields.Integer(string='Score Total', readonly=True, copy=False)
     ai_feedback = fields.Html(string='AI Feedback', readonly=True, copy=False)
     applicant_extracted_json = fields.Text(string='Applicant Extracted JSON', readonly=True, copy=False)
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        applicants = super().create(vals_list)
+        applicants._auto_run_scoring_if_ready()
+        return applicants
+
+    def write(self, vals):
+        result = super().write(vals)
+        if 'job_id' in vals:
+            self._auto_run_scoring_if_ready()
+        return result
+
+    def _auto_run_scoring_if_ready(self):
+        for applicant in self:
+            if not applicant.job_id:
+                continue
+
+            attachment = applicant._select_cv_attachment()
+            if not attachment:
+                continue
+
+            try:
+                applicant.get_applicant_job_match_data()
+            except UserError as error:
+                _logger.info(
+                    'Auto scoring skipped for applicant %s: %s',
+                    applicant.id,
+                    error,
+                )
+            except Exception as error:
+                _logger.warning(
+                    'Auto scoring failed for applicant %s: %s',
+                    applicant.id,
+                    error,
+                    exc_info=True,
+                )
 
     def _ai_feedback_to_html(self, feedback):
         if not isinstance(feedback, dict):
@@ -31,7 +111,7 @@ class HrApplicant(models.Model):
         def _list_html(values):
             items = [str(item).strip() for item in (values or []) if str(item).strip()]
             if not items:
-                return '<p><i>None</i></p>'
+                return '<p><i>Aucun</i></p>'
             return '<ul>%s</ul>' % ''.join('<li>%s</li>' % escape(item) for item in items)
 
         fit_level = escape(str(feedback.get('fit_level') or ''))
@@ -39,13 +119,13 @@ class HrApplicant(models.Model):
         summary = escape(str(feedback.get('summary') or ''))
 
         sections = [
-            '<p><b>Fit Level:</b> %s</p>' % fit_level,
-            '<p><b>Recommendation:</b> %s</p>' % recommendation,
-            '<p><b>Summary</b><br/>%s</p>' % summary,
-            '<p><b>Strengths</b></p>%s' % _list_html(feedback.get('strengths')),
-            '<p><b>Risks</b></p>%s' % _list_html(feedback.get('risks')),
-            '<p><b>Ambiguities To Verify</b></p>%s' % _list_html(feedback.get('ambiguities_to_verify')),
-            '<p><b>RH Interview Questions</b></p>%s' % _list_html(feedback.get('interview_questions')),
+            '<p><b>Niveau d adequation :</b> %s</p>' % fit_level,
+            '<p><b>Recommandation :</b> %s</p>' % recommendation,
+            '<p><b>Resume</b><br/>%s</p>' % summary,
+            '<p><b>Points forts</b></p>%s' % _list_html(feedback.get('strengths')),
+            '<p><b>Risques</b></p>%s' % _list_html(feedback.get('risks')),
+            '<p><b>Ambiguites a verifier</b></p>%s' % _list_html(feedback.get('ambiguities_to_verify')),
+            '<p><b>Questions RH</b></p>%s' % _list_html(feedback.get('interview_questions')),
         ]
         return ''.join(sections)
 
@@ -227,10 +307,162 @@ class HrApplicant(models.Model):
         normalized = re.sub(r'\s+', ' ', normalized).strip()
         return normalized
 
+    def _split_cv_text_chunks(self, cv_text):
+        normalized = str(cv_text or '').strip()
+        if not normalized:
+            return []
+
+        chunk_size = int(self._CV_EXTRACTION_CHUNK_SIZE)
+        overlap = int(self._CV_EXTRACTION_CHUNK_OVERLAP)
+        max_chunks = int(self._CV_EXTRACTION_MAX_CHUNKS)
+        if chunk_size <= 0:
+            return [normalized]
+
+        overlap = max(0, min(overlap, max(0, chunk_size - 1)))
+        step = max(1, chunk_size - overlap)
+
+        chunks = []
+        start = 0
+        while start < len(normalized) and len(chunks) < max_chunks:
+            end = min(start + chunk_size, len(normalized))
+            chunks.append(normalized[start:end])
+            if end >= len(normalized):
+                break
+            start += step
+        return chunks
+
+    def _merge_profiles(self, profiles):
+        cleaned_profiles = [profile for profile in (profiles or []) if isinstance(profile, dict)]
+        if not cleaned_profiles:
+            return {
+                'id': self.id,
+                'name': self.partner_name or '',
+                'education': {'degree': '', 'field': '', 'university': ''},
+                'experiences': [],
+                'experience_years': 0.0,
+                'certification': [],
+                'skills': {},
+                'extraction_warnings': ['No profile data was extracted from the CV text.'],
+            }
+
+        merged = {
+            'id': self.id,
+            'name': '',
+            'education': {'degree': '', 'field': '', 'university': ''},
+            'experiences': [],
+            'experience_years': 0.0,
+            'certification': [],
+            'skills': {},
+        }
+
+        experience_seen = set()
+        certification_seen = set()
+        skill_scores = {}
+
+        for profile in cleaned_profiles:
+            if not merged['name']:
+                merged['name'] = str(profile.get('name') or '').strip()
+
+            education = profile.get('education') if isinstance(profile.get('education'), dict) else {}
+            for field_name in ('degree', 'field', 'university'):
+                if not merged['education'][field_name]:
+                    merged['education'][field_name] = str(education.get(field_name) or '').strip()
+
+            for experience in (profile.get('experiences') or []):
+                if not isinstance(experience, dict):
+                    continue
+                fingerprint = (
+                    str(experience.get('title') or '').strip().lower(),
+                    str(experience.get('company') or '').strip().lower(),
+                    str(experience.get('duration') or '').strip().lower(),
+                )
+                if fingerprint in experience_seen:
+                    continue
+                experience_seen.add(fingerprint)
+                merged['experiences'].append(experience)
+
+            for certification in (profile.get('certification') or []):
+                normalized_certification = str(certification or '').strip()
+                if not normalized_certification:
+                    continue
+                fingerprint = normalized_certification.lower()
+                if fingerprint in certification_seen:
+                    continue
+                certification_seen.add(fingerprint)
+                merged['certification'].append(normalized_certification)
+
+            for skill_name, raw_level in (profile.get('skills') or {}).items():
+                canonical_skill = self._canonical_skill_name(skill_name)
+                if not canonical_skill:
+                    continue
+                score = self._skill_level_to_score5(raw_level)
+                if score <= 0:
+                    continue
+                skill_scores[canonical_skill] = max(skill_scores.get(canonical_skill, 0), score)
+
+        merged['skills'] = {
+            skill_name: self._GENERAL_LEVEL_BY_SCORE5.get(level, 'Beginner')
+            for skill_name, level in skill_scores.items()
+        }
+        merged['experience_years'] = self._calculate_experience_years(merged['experiences'])
+        merged['extraction_warnings'] = self._build_extraction_warnings(merged)
+        return merged
+
+    def _build_extraction_warnings(self, applicant_profile):
+        warnings = []
+        profile = applicant_profile if isinstance(applicant_profile, dict) else {}
+
+        if not str(profile.get('name') or '').strip():
+            warnings.append('Candidate name could not be extracted reliably.')
+
+        education = profile.get('education') if isinstance(profile.get('education'), dict) else {}
+        if not any(str(education.get(field_name) or '').strip() for field_name in ('degree', 'field', 'university')):
+            warnings.append('Education details are incomplete or missing.')
+
+        experiences = profile.get('experiences') if isinstance(profile.get('experiences'), list) else []
+        if not experiences:
+            warnings.append('No experience entries were extracted from the CV.')
+
+        skills = profile.get('skills') if isinstance(profile.get('skills'), dict) else {}
+        if not skills:
+            warnings.append('No skills were extracted from the CV.')
+
+        return warnings
+
+    def _month_from_name(self, month_name):
+        return self._MONTH_NAME_TO_NUMBER.get(str(month_name or '').strip().lower(), 0)
+
     def _duration_to_year_interval(self, duration_text):
         normalized = self._normalize_duration_text(duration_text)
         if not normalized:
             return None
+
+        month_year_matches = list(
+            re.finditer(
+                r'\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|'
+                r'sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(19|20\d{2})\b',
+                normalized.lower(),
+            )
+        )
+
+        month_year_points = []
+        for match in month_year_matches:
+            month = self._month_from_name(match.group(1))
+            year = int(match.group(2))
+            if month and year:
+                month_year_points.append((year, month))
+
+        if month_year_points:
+            start_year, start_month = month_year_points[0]
+            if re.search(r'\b(present|current|now|ongoing)\b', normalized.lower()):
+                today = date.today()
+                end_year, end_month = today.year, today.month
+            else:
+                end_year, end_month = month_year_points[-1]
+
+            if (end_year, end_month) < (start_year, start_month):
+                start_year, start_month, end_year, end_month = end_year, end_month, start_year, start_month
+            return (start_year, start_month, end_year, end_month)
 
         year_values = [int(year) for year in re.findall(r'\b(?:19|20)\d{2}\b', normalized)]
         if not year_values:
@@ -238,14 +470,18 @@ class HrApplicant(models.Model):
 
         start_year = year_values[0]
         end_year = year_values[-1]
+        start_month = 1
+        end_month = 12
 
         if re.search(r'\b(present|current|now|ongoing)\b', normalized.lower()):
-            end_year = date.today().year
+            today = date.today()
+            end_year = today.year
+            end_month = today.month
 
-        if end_year < start_year:
-            start_year, end_year = end_year, start_year
+        if (end_year, end_month) < (start_year, start_month):
+            start_year, start_month, end_year, end_month = end_year, end_month, start_year, start_month
 
-        return (start_year, end_year)
+        return (start_year, start_month, end_year, end_month)
 
     def _calculate_experience_years(self, experiences):
         intervals = []
@@ -259,19 +495,26 @@ class HrApplicant(models.Model):
         if not intervals:
             return 0.0
 
-        intervals.sort(key=lambda interval: interval[0])
+        intervals.sort(key=lambda interval: (interval[0], interval[1]))
         merged_intervals = [list(intervals[0])]
-        for start_year, end_year in intervals[1:]:
-            last_start, last_end = merged_intervals[-1]
-            if start_year <= last_end:
-                merged_intervals[-1][1] = max(last_end, end_year)
+        for start_year, start_month, end_year, end_month in intervals[1:]:
+            last_start_year, last_start_month, last_end_year, last_end_month = merged_intervals[-1]
+            last_end_index = (last_end_year * 12) + last_end_month
+            current_start_index = (start_year * 12) + start_month
+            current_end_index = (end_year * 12) + end_month
+            if current_start_index <= (last_end_index + 1):
+                if current_end_index > last_end_index:
+                    merged_intervals[-1][2] = end_year
+                    merged_intervals[-1][3] = end_month
             else:
-                merged_intervals.append([start_year, end_year])
+                merged_intervals.append([start_year, start_month, end_year, end_month])
 
         total_years = 0.0
-        for start_year, end_year in merged_intervals:
-            span = end_year - start_year
-            total_years += float(max(1, span))
+        for start_year, start_month, end_year, end_month in merged_intervals:
+            start_index = (start_year * 12) + start_month
+            end_index = (end_year * 12) + end_month
+            months_span = max(1, end_index - start_index + 1)
+            total_years += float(months_span) / 12.0
 
         return round(total_years, 1)
 
@@ -396,6 +639,7 @@ class HrApplicant(models.Model):
             'experience_years': experience_years,
             'certification': normalized_certifications,
             'skills': normalized_skills,
+            'extraction_warnings': [],
         }
 
     def _extract_profile_with_groq(self, cv_text):
@@ -412,16 +656,32 @@ class HrApplicant(models.Model):
             'For language skills, use exactly one of: A1, A2, B1, B2, C1, C2. '\
             'Do not include markdown, comments, or explanations.'
         )
-        user_prompt = (
-            'Extract CV data from the text below. '\
-            'Set "id" to %s. '\
-            'If a value is missing, use empty string, empty list, or empty object. '\
-            'Always include skills_pertinents for each experience when possible. '\
-            'Use string proficiency levels (not numeric).\n\nCV TEXT:\n%s'
-        ) % (self.id, cv_text[:16000])
 
-        ai_payload = self._call_groq_json(system_prompt, user_prompt)
-        return self._normalize_ai_profile(ai_payload)
+        chunks = self._split_cv_text_chunks(cv_text)
+        if not chunks:
+            return self._normalize_ai_profile({})
+
+        profiles = []
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            user_prompt = (
+                'Extract CV data from the text below. '\
+                'Set "id" to %s. '\
+                'If a value is missing, use empty string, empty list, or empty object. '\
+                'Always include skills_pertinents for each experience when possible. '\
+                'Use string proficiency levels (not numeric). '\
+                'Chunk %s/%s of a longer CV.\n\nCV TEXT:\n%s'
+            ) % (self.id, chunk_index, len(chunks), chunk)
+            ai_payload = self._call_groq_json(system_prompt, user_prompt)
+            profiles.append(self._normalize_ai_profile(ai_payload))
+
+        merged = self._merge_profiles(profiles)
+        if len(chunks) > 1:
+            merged_warnings = list(merged.get('extraction_warnings') or [])
+            merged_warnings.append(
+                'Long CV parsed in %s chunks. Verify chronology and duplicate entries manually.' % len(chunks)
+            )
+            merged['extraction_warnings'] = merged_warnings
+        return merged
 
     def _skill_level_to_score5(self, raw_level):
         if raw_level is None:
@@ -476,6 +736,7 @@ class HrApplicant(models.Model):
             },
             'experience_years': applicant_data.get('experience_years') or 0.0,
             'certification': applicant_data.get('certification') or [],
+            'extraction_warnings': applicant_data.get('extraction_warnings') or [],
         }
 
         required_skills = [str(skill_name).strip() for skill_name in job_skills.keys() if str(skill_name).strip()]
@@ -503,6 +764,12 @@ class HrApplicant(models.Model):
         normalized = re.sub(r'\s+', ' ', normalized).strip()
         return normalized
 
+    def _canonical_skill_name(self, value):
+        normalized = self._normalize_skill_key(value)
+        if not normalized:
+            return ''
+        return self._SKILL_SYNONYMS.get(normalized, normalized)
+
     def _round_half_up(self, value):
         try:
             numeric_value = float(value)
@@ -518,7 +785,7 @@ class HrApplicant(models.Model):
             return index
 
         for raw_name, raw_level in candidate_skills.items():
-            normalized_name = self._normalize_skill_key(raw_name)
+            normalized_name = self._canonical_skill_name(raw_name)
             if not normalized_name:
                 continue
             level = 0
@@ -533,7 +800,7 @@ class HrApplicant(models.Model):
     def _extract_required_language_skills(self, required_skills):
         language_skills = []
         for skill_name in required_skills:
-            normalized_name = self._normalize_skill_key(skill_name)
+            normalized_name = self._canonical_skill_name(skill_name)
             if not normalized_name:
                 continue
             if normalized_name in self._LANGUAGE_SKILL_NAMES:
@@ -541,10 +808,10 @@ class HrApplicant(models.Model):
         return language_skills
 
     def _extract_required_technical_skills(self, required_skills):
-        language_keys = {self._normalize_skill_key(name) for name in self._LANGUAGE_SKILL_NAMES}
+        language_keys = {self._canonical_skill_name(name) for name in self._LANGUAGE_SKILL_NAMES}
         tech_skills = []
         for skill_name in required_skills:
-            normalized_name = self._normalize_skill_key(skill_name)
+            normalized_name = self._canonical_skill_name(skill_name)
             if not normalized_name:
                 continue
             if normalized_name in language_keys:
@@ -580,7 +847,7 @@ class HrApplicant(models.Model):
 
         if 'phd' in normalized or 'doctorat' in normalized or 'doctorate' in normalized:
             return 8
-        if 'master' in normalized or 'engineer' in normalized or 'ing' in normalized:
+        if 'master' in normalized or 'engineer' in normalized or 'ingenieur' in normalized or re.search(r'\bing\b', normalized):
             return 5
         if 'bachelor' in normalized or 'licence' in normalized or 'license' in normalized:
             return 3
@@ -647,8 +914,15 @@ class HrApplicant(models.Model):
 
         feedback = payload.get('ai_feedback') if isinstance(payload.get('ai_feedback'), dict) else {}
         fit_level = str(feedback.get('fit_level') or '').strip()
-        if fit_level not in ('Strong Fit', 'Moderate Fit', 'Weak Fit'):
-            fit_level = 'Moderate Fit'
+        fit_level_map = {
+            'Strong Fit': 'Adequation forte',
+            'Moderate Fit': 'Adequation moderee',
+            'Weak Fit': 'Adequation faible',
+            'Adequation forte': 'Adequation forte',
+            'Adequation moderee': 'Adequation moderee',
+            'Adequation faible': 'Adequation faible',
+        }
+        fit_level = fit_level_map.get(fit_level, 'Adequation moderee')
 
         normalized_feedback = {
             'fit_level': fit_level,
@@ -682,28 +956,28 @@ class HrApplicant(models.Model):
     def _build_fallback_feedback(self, score_details, matched_skills, missing_requirements):
         total_score = int(sum((score_details or {}).values()))
         if total_score >= 75:
-            fit_level = 'Strong Fit'
-            recommendation = 'Proceed'
+            fit_level = 'Adequation forte'
+            recommendation = 'Poursuivre'
         elif total_score >= 55:
-            fit_level = 'Moderate Fit'
-            recommendation = 'Proceed with caution'
+            fit_level = 'Adequation moderee'
+            recommendation = 'Poursuivre avec prudence'
         else:
-            fit_level = 'Weak Fit'
-            recommendation = 'Reject'
+            fit_level = 'Adequation faible'
+            recommendation = 'Rejeter'
 
         top_strengths = list(matched_skills or [])[:8]
         top_risks = list(missing_requirements or [])[:8]
         summary_lines = [
-            'Deterministic scoring summary for recruiter review.',
-            'Total score=%s/100.' % total_score,
-            'Technical=%s/40, Experience=%s/35, Education=%s/15, Languages=%s/10.' % (
+            'Resume de scoring deterministe pour support a la decision RH.',
+            'Score total=%s/100.' % total_score,
+            'Technique=%s/40, Experience=%s/35, Education=%s/15, Langues=%s/10.' % (
                 score_details.get('competences_techniques', 0),
                 score_details.get('experience', 0),
                 score_details.get('education', 0),
                 score_details.get('langues', 0),
             ),
-            'This fallback feedback is generated without LLM narrative and should be treated as a concise risk checklist.',
-            'Prioritize manual validation of level claims, recency of experience, and education equivalence before final decision.',
+            'Ce retour de secours est genere sans narration LLM et doit etre traite comme une checklist concise des risques.',
+            'Prioriser la validation manuelle des niveaux declares, de la recence de l experience et de l equivalence des diplomes avant decision finale.',
         ]
         return {
             'fit_level': fit_level,
@@ -711,14 +985,14 @@ class HrApplicant(models.Model):
             'strengths': top_strengths,
             'risks': top_risks,
             'ambiguities_to_verify': [
-                'Are claimed proficiency levels backed by concrete project evidence?',
-                'Do date ranges in experiences contain overlaps or gaps affecting total years?',
-                'Is degree level equivalent to the required local market standard?',
+                'Les niveaux declares sont ils soutenus par des preuves concretes en projet ?',
+                'Les periodes d experience contiennent elles des chevauchements ou des trous impactant le total d annees ?',
+                'Le niveau de diplome est il equivalent au standard local requis ?',
             ],
             'interview_questions': [
-                'What type of work environment helps you perform at your best, and why?',
-                'Can you describe a conflict with a colleague and how you resolved it?',
-                'Which responsibilities in your last role did you own end-to-end?',
+                'Quel type d environnement de travail vous permet de donner le meilleur de vous meme, et pourquoi ?',
+                'Pouvez vous decrire un conflit avec un collegue et la maniere dont vous l avez resolu ?',
+                'Quelles responsabilites aviez vous de bout en bout dans votre dernier poste ?',
             ],
             'recommendation': recommendation,
         }
@@ -726,19 +1000,20 @@ class HrApplicant(models.Model):
     def _generate_ai_recruiter_feedback(self, candidate_payload, job_payload, scoring_payload):
         self.ensure_one()
         system_prompt = (
-            'You are a senior recruiter assistant. '\
-            'Use only provided evidence. '\
-            'Do not recalculate scores. '\
-            'Highlight ambiguities explicitly. '\
-            'Be detailed and concrete for recruiter actionability. '\
-            'Write a long summary (at least 120 words) with balanced strengths and risks. '\
-            'Provide 5-8 strengths, 5-8 risks, 4-8 ambiguities_to_verify, and 6-10 interview_questions. '\
-            'interview_questions must be RH-only (behavior, motivation, communication, culture fit). '\
-            'Do not include technical, coding, architecture, or tool-specific interview questions. '\
-            'Return ONLY valid JSON with this exact structure: '\
-            '{"fit_level": "Strong Fit|Moderate Fit|Weak Fit", "summary": str, '\
+            'Tu es un assistant RH senior. '\
+            'Utilise uniquement les preuves fournies. '\
+            'Ne recalcule pas les scores. '\
+            'Mets en avant explicitement les zones d ambiguite. '\
+            'Sois detaille et concret pour aider la decision recruteur. '\
+            'Ecris un resume long (au moins 120 mots) avec un equilibre entre points forts et risques. '\
+            'Fournis 5-8 strengths, 5-8 risks, 4-8 ambiguities_to_verify et 6-10 interview_questions. '\
+            'interview_questions doit etre strictement RH (comportement, motivation, communication, culture fit). '\
+            'N inclus aucune question technique, de code, d architecture ou liee aux outils. '\
+            'Tous les textes et valeurs doivent etre en francais. '\
+            'Retourne UNIQUEMENT un JSON valide avec cette structure exacte: '\
+            '{"fit_level": "Adequation forte|Adequation moderee|Adequation faible", "summary": str, '\
             '"strengths": [str], "risks": [str], "ambiguities_to_verify": [str], '\
-            '"interview_questions": [str], "recommendation": "Proceed|Proceed with caution|Reject"}.'
+            '"interview_questions": [str], "recommendation": "Poursuivre|Poursuivre avec prudence|Rejeter"}.'
         )
         prompt_payload = {
             'candidate': {
@@ -763,10 +1038,11 @@ class HrApplicant(models.Model):
             },
         }
         user_prompt = (
-            'Analyze candidate fit for recruiter decision support. '\
-            'Output detailed, evidence-based feedback and avoid generic wording. '\
-            'Interview questions must be non-technical and suitable for RH screening only. '\
-            'When evidence is missing, state uncertainty clearly in ambiguities_to_verify.\n%s'
+            'Analyse l adequation du candidat pour la prise de decision RH. '\
+            'Produis un retour detaille, base sur des preuves, et evite les formulations generiques. '\
+            'Les questions d entretien doivent etre non techniques et adaptees uniquement a un screening RH. '\
+            'Quand des preuves manquent, exprime clairement l incertitude dans ambiguities_to_verify. '\
+            'Ecris tout en francais.\n%s'
         ) % json.dumps(
             prompt_payload,
             ensure_ascii=False,
@@ -776,8 +1052,8 @@ class HrApplicant(models.Model):
             normalized = self._normalize_match_score_payload({'ai_feedback': ai_feedback}).get('ai_feedback')
             if normalized:
                 return normalized
-        except Exception:
-            pass
+        except Exception as error:
+            _logger.warning('Failed to generate AI feedback for candidate %s: %s', self.id, error, exc_info=True)
 
         return self._build_fallback_feedback(
             scoring_payload.get('score_details') or {},
@@ -798,6 +1074,16 @@ class HrApplicant(models.Model):
         matched_skills = []
         missing_requirements = []
         explanation = {}
+        extraction_warnings = [
+            str(item).strip()
+            for item in (candidate_payload.get('extraction_warnings') or [])
+            if str(item).strip()
+        ]
+        if extraction_warnings:
+            explanation['data_quality'] = ' | '.join(extraction_warnings)
+            missing_requirements.extend(
+                ['Extraction warning: %s' % item for item in extraction_warnings]
+            )
 
         # Component 1: Technical skills (0-40).
         tech_points_raw = 0.0
@@ -805,7 +1091,7 @@ class HrApplicant(models.Model):
             points_per_skill = 40.0 / len(tech_skills)
             tech_calc_parts = ['N=%s, pts_per_skill=%.2f' % (len(tech_skills), points_per_skill)]
             for skill_name in tech_skills:
-                normalized_name = self._normalize_skill_key(skill_name)
+                normalized_name = self._canonical_skill_name(skill_name)
                 level = candidate_skill_index.get(normalized_name, 0)
                 required_level = self._skill_level_to_score5(required_skill_levels.get(skill_name) or 0)
                 effective_required = max(1, required_level)
@@ -861,7 +1147,7 @@ class HrApplicant(models.Model):
             points_per_language = 10.0 / len(language_skills)
             language_parts = ['L=%s, pts_per_lang=%.2f' % (len(language_skills), points_per_language)]
             for language_name in language_skills:
-                normalized_name = self._normalize_skill_key(language_name)
+                normalized_name = self._canonical_skill_name(language_name)
                 level = candidate_skill_index.get(normalized_name, 0)
                 required_level = self._skill_level_to_score5(required_skill_levels.get(language_name) or 0)
                 effective_required = max(1, required_level)
@@ -883,8 +1169,8 @@ class HrApplicant(models.Model):
             explanation['langues'] = ' | '.join(language_parts)
             langues_score = max(0, min(10, self._round_half_up(lang_points_raw)))
         else:
-            langues_score = 10
-            explanation['langues'] = 'No required language in job.required_skills -> score=10.'
+            langues_score = 5
+            explanation['langues'] = 'No required language in job.required_skills -> score=5.'
 
         score_details = {
             'competences_techniques': competences_techniques,
@@ -916,6 +1202,11 @@ class HrApplicant(models.Model):
         job_list = self.get_extracted_job_data()
         if not job_list:
             raise UserError('No linked job data found for this applicant.')
+        if len(job_list) > 1:
+            raise UserError(
+                'Multiple job payloads found for this applicant. '
+                'Please keep only one target job before running scoring.'
+            )
 
         job_data = job_list[0]
         match_data = self._score_applicant_against_job_with_groq(applicant_data, job_data)
