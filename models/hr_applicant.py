@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from html import escape
 from datetime import date
 
@@ -19,6 +20,7 @@ class HrApplicant(models.Model):
     _CV_EXTRACTION_CHUNK_SIZE = 16000
     _CV_EXTRACTION_CHUNK_OVERLAP = 1000
     _CV_EXTRACTION_MAX_CHUNKS = 3
+    _GOOD_SKILL_MIN_SCORE5 = 4
     _GENERAL_SKILL_LEVELS = ('Beginner', 'Elementary', 'Intermediate', 'Advanced', 'Expert')
     _GENERAL_LEVEL_BY_SCORE5 = {
         1: 'Beginner',
@@ -70,17 +72,29 @@ class HrApplicant(models.Model):
     }
     _MONTH_NAME_TO_NUMBER = {
         'jan': 1, 'january': 1,
+        'janv': 1, 'janvier': 1,
         'feb': 2, 'february': 2,
+        'fev': 2, 'fevr': 2, 'fevrier': 2,
         'mar': 3, 'march': 3,
+        'mars': 3,
         'apr': 4, 'april': 4,
+        'avr': 4, 'avril': 4,
         'may': 5,
+        'mai': 5,
         'jun': 6, 'june': 6,
+        'juin': 6,
         'jul': 7, 'july': 7,
+        'juil': 7, 'juillet': 7,
         'aug': 8, 'august': 8,
+        'aout': 8,
         'sep': 9, 'sept': 9, 'september': 9,
+        'septembre': 9,
         'oct': 10, 'october': 10,
+        'octobre': 10,
         'nov': 11, 'november': 11,
+        'novembre': 11,
         'dec': 12, 'december': 12,
+        'decembre': 12,
     }
 
     score_total = fields.Integer(string='Score Total', readonly=True, copy=False)
@@ -468,18 +482,96 @@ class HrApplicant(models.Model):
         return warnings
 
     def _month_from_name(self, month_name):
-        return self._MONTH_NAME_TO_NUMBER.get(str(month_name or '').strip().lower(), 0)
+        normalized = str(month_name or '').strip().lower().replace('.', '')
+        normalized = ''.join(
+            character
+            for character in unicodedata.normalize('NFD', normalized)
+            if unicodedata.category(character) != 'Mn'
+        )
+        return self._MONTH_NAME_TO_NUMBER.get(normalized, 0)
+
+    def _duration_to_months_estimate(self, duration_text):
+        normalized = self._normalize_duration_text(duration_text).lower()
+        if not normalized:
+            return 0
+
+        years_match = re.search(r'(\d+)\s*(?:ans?|years?)\b', normalized)
+        months_match = re.search(r'(\d+)\s*(?:mois|months?)\b', normalized)
+
+        total_months = 0
+        if years_match:
+            total_months += int(years_match.group(1)) * 12
+        if months_match:
+            total_months += int(months_match.group(1))
+        return total_months
 
     def _duration_to_year_interval(self, duration_text):
         normalized = self._normalize_duration_text(duration_text)
         if not normalized:
             return None
 
+        lowered = normalized.lower()
+        has_present = bool(re.search(r'\b(present|current|now|ongoing|actuel|actuelle|a ce jour|en cours)\b', lowered))
+
+        # Pattern: MM/YYYY or MM-YYYY
+        numeric_month_year_matches = list(
+            re.finditer(r'\b(0?[1-9]|1[0-2])[\-/]((?:19|20)\d{2})\b', lowered)
+        )
+        numeric_month_year_points = [
+            (int(match.group(2)), int(match.group(1)))
+            for match in numeric_month_year_matches
+        ]
+
+        if numeric_month_year_points:
+            start_year, start_month = numeric_month_year_points[0]
+            if has_present:
+                today = date.today()
+                end_year, end_month = today.year, today.month
+            else:
+                end_year, end_month = numeric_month_year_points[-1]
+
+            if (end_year, end_month) < (start_year, start_month):
+                start_year, start_month, end_year, end_month = end_year, end_month, start_year, start_month
+            return (start_year, start_month, end_year, end_month)
+
+        # Pattern: YYYY-MM or YYYY/MM
+        year_month_matches = list(
+            re.finditer(r'\b((?:19|20)\d{2})[\-/](0?[1-9]|1[0-2])\b', lowered)
+        )
+        year_month_points = [
+            (int(match.group(1)), int(match.group(2)))
+            for match in year_month_matches
+        ]
+
+        if year_month_points:
+            start_year, start_month = year_month_points[0]
+            if has_present:
+                today = date.today()
+                end_year, end_month = today.year, today.month
+            else:
+                end_year, end_month = year_month_points[-1]
+
+            if (end_year, end_month) < (start_year, start_month):
+                start_year, start_month, end_year, end_month = end_year, end_month, start_year, start_month
+            return (start_year, start_month, end_year, end_month)
+
         month_year_matches = list(
             re.finditer(
-                r'\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|'
-                r'sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(19|20\d{2})\b',
-                normalized.lower(),
+                r'\b('
+                r'jan(?:uary)?|janv(?:ier)?|'
+                r'feb(?:ruary)?|fev(?:r(?:ier)?)?|'
+                r'mar(?:ch)?|mars|'
+                r'apr(?:il)?|avr(?:il)?|'
+                r'may|mai|'
+                r'jun(?:e)?|juin|'
+                r'jul(?:y)?|juil(?:let)?|'
+                r'aug(?:ust)?|aout|'
+                r'sep(?:t|tember)?|septembre|'
+                r'oct(?:ober)?|octobre|'
+                r'nov(?:ember)?|novembre|'
+                r'dec(?:ember)?|decembre'
+                r')\s+((?:19|20)\d{2})\b',
+                lowered,
             )
         )
 
@@ -492,7 +584,7 @@ class HrApplicant(models.Model):
 
         if month_year_points:
             start_year, start_month = month_year_points[0]
-            if re.search(r'\b(present|current|now|ongoing)\b', normalized.lower()):
+            if has_present:
                 today = date.today()
                 end_year, end_month = today.year, today.month
             else:
@@ -511,7 +603,7 @@ class HrApplicant(models.Model):
         start_month = 1
         end_month = 12
 
-        if re.search(r'\b(present|current|now|ongoing)\b', normalized.lower()):
+        if has_present:
             today = date.today()
             end_year = today.year
             end_month = today.month
@@ -523,15 +615,18 @@ class HrApplicant(models.Model):
 
     def _calculate_experience_years(self, experiences):
         intervals = []
+        fallback_months = 0
         for experience in experiences:
             if not isinstance(experience, dict):
                 continue
             interval = self._duration_to_year_interval(experience.get('duration'))
             if interval:
                 intervals.append(interval)
+                continue
+            fallback_months += self._duration_to_months_estimate(experience.get('duration'))
 
         if not intervals:
-            return 0.0
+            return round(float(fallback_months) / 12.0, 1)
 
         intervals.sort(key=lambda interval: (interval[0], interval[1]))
         merged_intervals = [list(intervals[0])]
@@ -547,14 +642,16 @@ class HrApplicant(models.Model):
             else:
                 merged_intervals.append([start_year, start_month, end_year, end_month])
 
-        total_years = 0.0
+        total_months = 0
         for start_year, start_month, end_year, end_month in merged_intervals:
             start_index = (start_year * 12) + start_month
             end_index = (end_year * 12) + end_month
             months_span = max(1, end_index - start_index + 1)
-            total_years += float(months_span) / 12.0
+            total_months += months_span
 
-        return round(total_years, 1)
+        total_months += fallback_months
+
+        return round(float(total_months) / 12.0, 1)
 
     def _is_language_skill(self, skill_name):
         return self._canonical_skill_name(skill_name) in self._LANGUAGE_SKILL_NAMES
@@ -662,7 +759,8 @@ class HrApplicant(models.Model):
                 ],
             })
 
-        normalized_skills = {}
+        section_general_skills = {}
+        section_language_skills = {}
         for skill_name, skill_level in skills.items():
             if not skill_name:
                 continue
@@ -675,11 +773,38 @@ class HrApplicant(models.Model):
 
             if self._is_language_skill(canonical_name):
                 normalized_level = self._normalize_language_skill_level(skill_level)
+                if normalized_level:
+                    section_language_skills[canonical_name] = normalized_level
             else:
                 normalized_level = self._normalize_general_skill_level(skill_level)
+                if normalized_level:
+                    section_general_skills[canonical_name] = normalized_level
 
-            if normalized_level:
-                normalized_skills[canonical_name] = normalized_level
+        # Keep skills focused on: experience-relevant skills, extracted languages,
+        # and only strong additional skills explicitly present in the CV skills section.
+        relevant_skill_names = set()
+        for experience in normalized_experiences:
+            for skill_name in (experience.get('skills_pertinents') or []):
+                canonical_name = self._canonical_skill_name(skill_name)
+                if canonical_name:
+                    relevant_skill_names.add(canonical_name)
+
+        normalized_skills = {}
+
+        for skill_name, level in section_language_skills.items():
+            normalized_skills[skill_name] = level
+
+        for skill_name in relevant_skill_names:
+            if skill_name in section_language_skills:
+                normalized_skills[skill_name] = section_language_skills[skill_name]
+            elif skill_name in section_general_skills:
+                normalized_skills[skill_name] = section_general_skills[skill_name]
+            elif not self._is_language_skill(skill_name):
+                normalized_skills[skill_name] = 'Intermediate'
+
+        for skill_name, level in section_general_skills.items():
+            if self._skill_level_to_score5(level) >= int(self._GOOD_SKILL_MIN_SCORE5):
+                normalized_skills.setdefault(skill_name, level)
 
         certifications = payload.get('certification')
         if not isinstance(certifications, list):
@@ -717,6 +842,7 @@ class HrApplicant(models.Model):
             '"experience_years": float, '\
             '"certification": [str], '\
             '"skills": {"skill_name": str_level}}. '\
+            'In "skills", prioritize languages and skills explicitly listed in the CV skills section. '\
             'For technical and soft skills, use exactly one of: Beginner, Elementary, Intermediate, Advanced, Expert. '\
             'For language skills, use exactly one of: A1, A2, B1, B2, C1, C2. '\
             'Always include spoken languages inside "skills" with CEFR levels when available. '\
@@ -735,6 +861,7 @@ class HrApplicant(models.Model):
                 'Set "id" to %s. '\
                 'If a value is missing, use empty string, empty list, or empty object. '\
                 'Always include skills_pertinents for each experience when possible. '\
+                'In top-level skills, include languages and explicit skills-section items first. '\
                 'Use string proficiency levels (not numeric). '\
                 'Chunk %s/%s of a longer CV.\n\nCV TEXT:\n%s'
             ) % (self.id, chunk_index, len(chunks), chunk)
@@ -803,115 +930,6 @@ class HrApplicant(models.Model):
         normalized = re.sub(r'^(language|langue)\s+', '', normalized).strip()
         normalized = self._SKILL_SYNONYMS.get(normalized, normalized)
         return self._LANGUAGE_SKILL_ALIASES.get(normalized, normalized)
-
-
-    def _validate_match_score_payload_schema(self, payload):
-        if not isinstance(payload, dict):
-            raise UserError('Groq matching response must be a JSON object.')
-
-        required_top_level = (
-            'explanation',
-            'score_details',
-            'matched_skills',
-            'missing_requirements',
-            'bonus_matches',
-            'ai_feedback',
-        )
-        missing_top_level = [key for key in required_top_level if key not in payload]
-        if missing_top_level:
-            raise UserError('Groq matching response is missing required keys: %s' % ', '.join(missing_top_level))
-
-        explanation = payload.get('explanation')
-        if not isinstance(explanation, dict):
-            raise UserError('Groq matching response key "explanation" must be an object.')
-        for key in ('competences_techniques', 'experience', 'education', 'langues'):
-            if key not in explanation:
-                raise UserError('Groq matching response "explanation" is missing key: %s' % key)
-            if not isinstance(explanation.get(key), str):
-                raise UserError('Groq matching response "explanation.%s" must be a string.' % key)
-
-        score_details = payload.get('score_details')
-        if not isinstance(score_details, dict):
-            raise UserError('Groq matching response key "score_details" must be an object.')
-        caps = {
-            'competences_techniques': 40,
-            'experience': 35,
-            'education': 15,
-            'langues': 10,
-        }
-        for key, max_value in caps.items():
-            if key not in score_details:
-                raise UserError('Groq matching response "score_details" is missing key: %s' % key)
-            raw_value = score_details.get(key)
-            try:
-                parsed_value = int(raw_value)
-            except (TypeError, ValueError):
-                raise UserError('Groq matching response "score_details.%s" must be an integer.' % key)
-            if parsed_value < 0 or parsed_value > max_value:
-                raise UserError(
-                    'Groq matching response "score_details.%s" must be between 0 and %s.'
-                    % (key, max_value)
-                )
-
-        for key in ('matched_skills', 'missing_requirements', 'bonus_matches'):
-            value = payload.get(key)
-            if not isinstance(value, list):
-                raise UserError('Groq matching response key "%s" must be a list.' % key)
-            if any(not isinstance(item, str) for item in value):
-                raise UserError('Groq matching response key "%s" must contain only strings.' % key)
-
-        feedback = payload.get('ai_feedback')
-        if not isinstance(feedback, dict):
-            raise UserError('Groq matching response key "ai_feedback" must be an object.')
-
-        required_feedback_keys = (
-            'fit_level',
-            'summary',
-            'strengths',
-            'risks',
-            'ambiguities_to_verify',
-            'interview_questions',
-            'recommendation',
-        )
-        missing_feedback_keys = [key for key in required_feedback_keys if key not in feedback]
-        if missing_feedback_keys:
-            raise UserError(
-                'Groq matching response "ai_feedback" is missing keys: %s'
-                % ', '.join(missing_feedback_keys)
-            )
-
-        allowed_fit_levels = {
-            'Adequation forte',
-            'Adequation moderee',
-            'Adequation faible',
-            'Strong Fit',
-            'Moderate Fit',
-            'Weak Fit',
-        }
-        fit_level = feedback.get('fit_level')
-        if not isinstance(fit_level, str) or fit_level not in allowed_fit_levels:
-            raise UserError(
-                'Groq matching response "ai_feedback.fit_level" must be one of: %s'
-                % ', '.join(sorted(allowed_fit_levels))
-            )
-
-        if not isinstance(feedback.get('summary'), str):
-            raise UserError('Groq matching response "ai_feedback.summary" must be a string.')
-
-        for key in ('strengths', 'risks', 'ambiguities_to_verify', 'interview_questions'):
-            value = feedback.get(key)
-            if not isinstance(value, list):
-                raise UserError('Groq matching response "ai_feedback.%s" must be a list.' % key)
-            if any(not isinstance(item, str) for item in value):
-                raise UserError('Groq matching response "ai_feedback.%s" must contain only strings.' % key)
-
-        allowed_recommendations = {'Poursuivre', 'Poursuivre avec prudence', 'Rejeter'}
-        recommendation = feedback.get('recommendation')
-        if not isinstance(recommendation, str) or recommendation not in allowed_recommendations:
-            raise UserError(
-                'Groq matching response "ai_feedback.recommendation" must be one of: %s'
-                % ', '.join(sorted(allowed_recommendations))
-            )
 
 
     def _normalize_match_score_payload(self, payload):
@@ -987,23 +1005,28 @@ class HrApplicant(models.Model):
     def _score_applicant_against_job_with_groq(self, applicant_data, job_data):
         self.ensure_one()
         system_prompt = (
-            'Tu es un ATS (Applicant Tracking System) IA d\'élite et un recruteur technique intransigeant. '
-            'Ta mission est d\'évaluer de manière stricte, factuelle et mathématique l\'adéquation d\'un candidat par rapport à un poste précis.\n\n'
-            'RÈGLES ABSOLUES :\n'
-            '1. ZERO HALLUCINATION : Base-toi EXCLUSIVEMENT sur les données fournies. Si une compétence n\'est pas écrite, le candidat ne l\'a pas.\n'
-            '2. AUTORITÉ DU POSTE : Le JSON "job" dicte les règles. Le matching doit être strictement relatif aux exigences de "job_data".\n'
-            '3. BIAIS DE COMPLAISANCE INTERDIT : Ne sois pas généreux. Un score parfait (100) est quasiment impossible.\n'
-            '4. RÈGLE DES CRITÈRES MANQUANTS : Si le job n\'exige pas de diplôme (education) ou de langue (langues), accorde le maximum de points à ces catégories pour ne pas pénaliser le candidat.\n\n'
-            'BARÈME DE NOTATION STRICT (Total 100) :\n'
-            '- competences_techniques (Max 40) : 40=Maîtrise totale des prérequis core ; 20=Couvre 50% des prérequis ou maîtrise théorique ; 0=Aucun prérequis technique.\n'
-            '- experience (Max 35) : 35=Dépasse largement min_exp_years dans un rôle identique ; 20=Atteint tout juste min_exp_years ; 0=Expérience insuffisante ou non pertinente.\n'
-            '- education (Max 15) : 15=Diplôme et domaine correspondent exactement ; 5=Niveau OK mais domaine différent ; 0=Ne répond pas à l\'exigence.\n'
-            '- langues (Max 10) : 10=Niveau requis prouvé ou langue maternelle ; 0=Langue requise absente.\n\n'
-            'INTERPRÉTATION DU FIT LEVEL :\n'
-            '- "Adequation forte" : Score >= 75 ET aucun manque critique bloquant.\n'
-            '- "Adequation moderee" : Score 50-74, OU manque sur une compétence importante mais formable.\n'
-            '- "Adequation faible" : Score < 50, OU manque absolu sur un prérequis critique (ex: années d\'expérience très insuffisantes).\n\n'
-            'Format de sortie : UNIQUEMENT un objet JSON valide. L\'objet "explanation" DOIT apparaître avant "score_details" pour forcer le raisonnement mathématique.\n'
+            'Tu es un ATS IA et recruteur technique senior. '
+            'Evalue strictement un candidat par rapport a un poste en te basant uniquement sur les donnees JSON fournies.\n\n'
+            'Règles globales:\n'
+            '1) Zero hallucination: aucune information inventee, aucune hypothese externe.\n'
+            '2) Autorite du job: l evaluation doit etre strictement relative a job.\n'
+            '3) Langue de sortie: tout le contenu textuel final doit etre en francais.\n'
+            '4) Si job.education est vide -> education=15. Si exigences de langues absentes -> langues=10.\n'
+            '5) Penalite recence: competence coeur non utilisee depuis >24 mois -> -15% sur sa contribution.\n'
+            '6) Densite experience: si poste Senior/Lead/Architect/Manager et titres candidat uniquement Junior/Intern/Trainee -> -10 points sur experience.\n'
+            '7) Stabilite: tenure moyenne <12 mois -> ajouter risque de job hopping + question d entretien specifique.\n'
+            '8) Proximite d outil: outil exact absent mais concurrent direct maitrise -> 50% du credit, et mentionner "Equivalent tool mastered - verification required" dans ambiguities_to_verify.\n'
+            '9) Alignement education: domaine fortement non aligne (ex: Biologie pour Data Science) -> education=0, sauf compensation partielle par certifications specialisees pertinentes.\n\n'
+            'Bareme total 100:\n'
+            '- competences_techniques: 0..40\n'
+            '- experience: 0..35\n'
+            '- education: 0..15\n'
+            '- langues: 0..10\n\n'
+            'Fit level:\n'
+            '- Adequation forte: score >= 75 et pas de manque critique bloquant\n'
+            '- Adequation moderee: score 50..74 ou incertitudes importantes\n'
+            '- Adequation faible: score < 50 ou manque critique bloquant\n\n'
+            'Sortie: retourne uniquement un JSON valide et rien d autre, avec cette structure exacte:\n'
             '{\n'
             '  "explanation": {\n'
             '    "competences_techniques": "Raisonnement factuel de la note",\n'
@@ -1038,25 +1061,20 @@ class HrApplicant(models.Model):
         }
 
         user_prompt = (
-            'Exécute une comparaison approfondie, stricte et détaillée entre le profil du candidat et les exigences du poste.\n\n'
-            'ÉTAPES DE COMPARAISON OBLIGATOIRES (intègre ce raisonnement dans les clés "explanation") :\n'
-            '1. COMPARAISON TECHNIQUE : Compare rigoureusement les compétences du candidat ("candidate.skills") avec les prérequis du poste ("job.skills"). Identifie les correspondances exactes, les équivalences sémantiques (ex: Vue.js = Vue), les compétences manquantes critiques, et les compétences bonus.\n'
-            '2. COMPARAISON DE L\'EXPÉRIENCE : Compare mathématiquement le nombre d\'années ("candidate.experience_years") avec le minimum requis ("job.min_exp_years"). Ensuite, compare le contenu des missions ("candidate.experiences") avec la nature du poste ("job.title") pour évaluer la pertinence réelle de ces années.\n'
-            '3. COMPARAISON DE L\'ÉDUCATION : Compare le diplôme et la spécialité du candidat ("candidate.education") avec les exigences académiques du poste ("job.education" et "job.major").\n'
-            '4. COMPARAISON DES LANGUES : Compare les niveaux de langue du candidat avec les prérequis linguistiques du poste (en utilisant l\'échelle A1-C2).\n'
-            '5. SYNTHÈSE DES ÉCARTS : Dresse la liste exacte des manques bloquants ("missing_requirements") et des atouts supplémentaires ("bonus_matches").\n'
-            '6. DÉCISION DES SCORES : En te basant strictement sur le résultat matériel de ces 4 comparaisons, attribue les sous-scores définitifs dans "score_details".\n'
-            '7. CRÉATION DES QUESTIONS : Génère des "interview_questions" ultra-ciblées basées UNIQUEMENT sur les manques, les zones d\'ombre ou les chevauchements de dates identifiés lors de la comparaison de l\'expérience et des compétences.\n\n'
-            'Voici les données JSON à comparer :\n%s'
+            'Analyse le candidat contre ce poste en appliquant strictement les regles du system_prompt.\n'
+            'Priorites d execution:\n'
+            '1) comparer skills, experience, education et langues;\n'
+            '2) appliquer les ajustements (recence, seniorite, stabilite, equivalence outils, alignement education);\n'
+            '3) calculer les 4 sous-scores dans leurs bornes;\n'
+            '4) deduire fit_level et recommendation;\n'
+            '5) produire des risques et questions d entretien actionnables.\n\n'
+            'Donnees JSON a comparer:\n%s'
         ) % json.dumps(prompt_payload, ensure_ascii=False)
 
         try:
             payload = self._call_groq_json(system_prompt, user_prompt, max_tokens=2400)
-            self._validate_match_score_payload_schema(payload)
             payload['status'] = 'done'
             return self._normalize_match_score_payload(payload)
-        except UserError:
-            raise
         except Exception as error:
             _logger.warning('Failed to compute AI match: %s', error, exc_info=True)
             raise UserError('Erreur lors du matching AI avec Groq: %s' % error)
