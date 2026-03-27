@@ -247,7 +247,7 @@ class HrApplicant(models.Model):
         model = (
             params.get_param('scoring_candidates.groq_model')
             or params.get_param('groq_model')
-            or 'llama-3.3-70b-versatile'
+            or 'openai/gpt-oss-120b'
         )
         if not api_key:
             raise UserError(
@@ -378,6 +378,7 @@ class HrApplicant(models.Model):
         experience_seen = set()
         certification_seen = set()
         skill_scores = {}
+        language_skill_ranks = {}
 
         for profile in cleaned_profiles:
             if not merged['name']:
@@ -415,15 +416,32 @@ class HrApplicant(models.Model):
                 canonical_skill = self._canonical_skill_name(skill_name)
                 if not canonical_skill:
                     continue
+
+                if self._is_language_skill(canonical_skill):
+                    normalized_level = self._normalize_language_skill_level(raw_level)
+                    if not normalized_level:
+                        continue
+                    level_rank = self._LANGUAGE_LEVELS.index(normalized_level) + 1
+                    language_skill_ranks[canonical_skill] = max(
+                        language_skill_ranks.get(canonical_skill, 0),
+                        level_rank,
+                    )
+                    continue
+
                 score = self._skill_level_to_score5(raw_level)
                 if score <= 0:
                     continue
                 skill_scores[canonical_skill] = max(skill_scores.get(canonical_skill, 0), score)
 
-        merged['skills'] = {
+        merged_skills = {
             skill_name: self._GENERAL_LEVEL_BY_SCORE5.get(level, 'Beginner')
             for skill_name, level in skill_scores.items()
         }
+        for skill_name, level_rank in language_skill_ranks.items():
+            rank = max(1, min(len(self._LANGUAGE_LEVELS), int(level_rank)))
+            merged_skills[skill_name] = self._LANGUAGE_LEVELS[rank - 1]
+
+        merged['skills'] = merged_skills
         merged['experience_years'] = self._calculate_experience_years(merged['experiences'])
         merged['extraction_warnings'] = self._build_extraction_warnings(merged)
         return merged
@@ -787,6 +805,115 @@ class HrApplicant(models.Model):
         return self._LANGUAGE_SKILL_ALIASES.get(normalized, normalized)
 
 
+    def _validate_match_score_payload_schema(self, payload):
+        if not isinstance(payload, dict):
+            raise UserError('Groq matching response must be a JSON object.')
+
+        required_top_level = (
+            'explanation',
+            'score_details',
+            'matched_skills',
+            'missing_requirements',
+            'bonus_matches',
+            'ai_feedback',
+        )
+        missing_top_level = [key for key in required_top_level if key not in payload]
+        if missing_top_level:
+            raise UserError('Groq matching response is missing required keys: %s' % ', '.join(missing_top_level))
+
+        explanation = payload.get('explanation')
+        if not isinstance(explanation, dict):
+            raise UserError('Groq matching response key "explanation" must be an object.')
+        for key in ('competences_techniques', 'experience', 'education', 'langues'):
+            if key not in explanation:
+                raise UserError('Groq matching response "explanation" is missing key: %s' % key)
+            if not isinstance(explanation.get(key), str):
+                raise UserError('Groq matching response "explanation.%s" must be a string.' % key)
+
+        score_details = payload.get('score_details')
+        if not isinstance(score_details, dict):
+            raise UserError('Groq matching response key "score_details" must be an object.')
+        caps = {
+            'competences_techniques': 40,
+            'experience': 35,
+            'education': 15,
+            'langues': 10,
+        }
+        for key, max_value in caps.items():
+            if key not in score_details:
+                raise UserError('Groq matching response "score_details" is missing key: %s' % key)
+            raw_value = score_details.get(key)
+            try:
+                parsed_value = int(raw_value)
+            except (TypeError, ValueError):
+                raise UserError('Groq matching response "score_details.%s" must be an integer.' % key)
+            if parsed_value < 0 or parsed_value > max_value:
+                raise UserError(
+                    'Groq matching response "score_details.%s" must be between 0 and %s.'
+                    % (key, max_value)
+                )
+
+        for key in ('matched_skills', 'missing_requirements', 'bonus_matches'):
+            value = payload.get(key)
+            if not isinstance(value, list):
+                raise UserError('Groq matching response key "%s" must be a list.' % key)
+            if any(not isinstance(item, str) for item in value):
+                raise UserError('Groq matching response key "%s" must contain only strings.' % key)
+
+        feedback = payload.get('ai_feedback')
+        if not isinstance(feedback, dict):
+            raise UserError('Groq matching response key "ai_feedback" must be an object.')
+
+        required_feedback_keys = (
+            'fit_level',
+            'summary',
+            'strengths',
+            'risks',
+            'ambiguities_to_verify',
+            'interview_questions',
+            'recommendation',
+        )
+        missing_feedback_keys = [key for key in required_feedback_keys if key not in feedback]
+        if missing_feedback_keys:
+            raise UserError(
+                'Groq matching response "ai_feedback" is missing keys: %s'
+                % ', '.join(missing_feedback_keys)
+            )
+
+        allowed_fit_levels = {
+            'Adequation forte',
+            'Adequation moderee',
+            'Adequation faible',
+            'Strong Fit',
+            'Moderate Fit',
+            'Weak Fit',
+        }
+        fit_level = feedback.get('fit_level')
+        if not isinstance(fit_level, str) or fit_level not in allowed_fit_levels:
+            raise UserError(
+                'Groq matching response "ai_feedback.fit_level" must be one of: %s'
+                % ', '.join(sorted(allowed_fit_levels))
+            )
+
+        if not isinstance(feedback.get('summary'), str):
+            raise UserError('Groq matching response "ai_feedback.summary" must be a string.')
+
+        for key in ('strengths', 'risks', 'ambiguities_to_verify', 'interview_questions'):
+            value = feedback.get(key)
+            if not isinstance(value, list):
+                raise UserError('Groq matching response "ai_feedback.%s" must be a list.' % key)
+            if any(not isinstance(item, str) for item in value):
+                raise UserError('Groq matching response "ai_feedback.%s" must contain only strings.' % key)
+
+        allowed_recommendations = {'Poursuivre', 'Poursuivre avec prudence', 'Rejeter'}
+        recommendation = feedback.get('recommendation')
+        if not isinstance(recommendation, str) or recommendation not in allowed_recommendations:
+            raise UserError(
+                'Groq matching response "ai_feedback.recommendation" must be one of: %s'
+                % ', '.join(sorted(allowed_recommendations))
+            )
+
+
     def _normalize_match_score_payload(self, payload):
         if not isinstance(payload, dict):
             payload = {}
@@ -925,8 +1052,11 @@ class HrApplicant(models.Model):
 
         try:
             payload = self._call_groq_json(system_prompt, user_prompt, max_tokens=2400)
+            self._validate_match_score_payload_schema(payload)
             payload['status'] = 'done'
             return self._normalize_match_score_payload(payload)
+        except UserError:
+            raise
         except Exception as error:
             _logger.warning('Failed to compute AI match: %s', error, exc_info=True)
             raise UserError('Erreur lors du matching AI avec Groq: %s' % error)
