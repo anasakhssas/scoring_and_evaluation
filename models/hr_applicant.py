@@ -242,7 +242,7 @@ class HrApplicant(models.Model):
             'Use a searchable PDF or enable attachment indexing in Odoo.'
         )
 
-    def _get_groq_configuration(self):
+    def _get_groq_configuration(self, stage='general'):
         params = self.env['ir.config_parameter'].sudo()
         api_key = ''
         for key_name in ('scoring_candidates.groq_api_key', 'groq_api_key', 'GROQ_API_KEY'):
@@ -258,11 +258,24 @@ class HrApplicant(models.Model):
                     api_key = env_value
                     break
 
-        model = (
-            params.get_param('scoring_candidates.groq_model')
-            or params.get_param('groq_model')
-            or 'openai/gpt-oss-120b'
-        )
+        model_keys_by_stage = {
+            'extraction': ('scoring_candidates.groq_model_extraction',),
+            'comparison': ('scoring_candidates.groq_model_comparison',),
+        }
+        model = ''
+        for key_name in model_keys_by_stage.get(stage, ()):
+            key_value = (params.get_param(key_name) or '').strip()
+            if key_value:
+                model = key_value
+                break
+
+        if not model:
+            model = (
+                (params.get_param('scoring_candidates.groq_model') or '').strip()
+                or (params.get_param('groq_model') or '').strip()
+                or 'openai/gpt-oss-120b'
+            )
+
         if not api_key:
             raise UserError(
                 'Missing Groq API key.\n'
@@ -273,9 +286,9 @@ class HrApplicant(models.Model):
             )
         return api_key, model
 
-    def _call_groq_json(self, system_prompt, user_prompt, max_tokens=1600):
+    def _call_groq_json(self, system_prompt, user_prompt, max_tokens=1600, stage='general'):
         self.ensure_one()
-        api_key, model = self._get_groq_configuration()
+        api_key, model = self._get_groq_configuration(stage=stage)
         request_payload = {
             'model': model,
             'temperature': 0,
@@ -865,7 +878,7 @@ class HrApplicant(models.Model):
                 'Use string proficiency levels (not numeric). '\
                 'Chunk %s/%s of a longer CV.\n\nCV TEXT:\n%s'
             ) % (self.id, chunk_index, len(chunks), chunk)
-            ai_payload = self._call_groq_json(system_prompt, user_prompt)
+            ai_payload = self._call_groq_json(system_prompt, user_prompt, stage='extraction')
             profiles.append(self._normalize_ai_profile(ai_payload))
 
         merged = self._merge_profiles(profiles)
@@ -1072,7 +1085,12 @@ class HrApplicant(models.Model):
         ) % json.dumps(prompt_payload, ensure_ascii=False)
 
         try:
-            payload = self._call_groq_json(system_prompt, user_prompt, max_tokens=2400)
+            payload = self._call_groq_json(
+                system_prompt,
+                user_prompt,
+                max_tokens=2400,
+                stage='comparison',
+            )
             payload['status'] = 'done'
             return self._normalize_match_score_payload(payload)
         except Exception as error:
