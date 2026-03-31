@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import time
 import unicodedata
 from html import escape
 from datetime import date
@@ -17,6 +18,9 @@ _logger = logging.getLogger(__name__)
 class HrApplicant(models.Model):
     _inherit = 'hr.applicant'
     _GROQ_CHAT_COMPLETIONS_URL = 'https://api.groq.com/openai/v1/chat/completions'
+    _GROQ_RETRYABLE_STATUS_CODES = (408, 409, 425, 429, 500, 502, 503, 504)
+    _GROQ_MAX_RETRIES = 3
+    _GROQ_BACKOFF_BASE_SECONDS = 2
     _CV_EXTRACTION_CHUNK_SIZE = 16000
     _CV_EXTRACTION_CHUNK_OVERLAP = 1000
     _CV_EXTRACTION_MAX_CHUNKS = 3
@@ -137,6 +141,48 @@ class HrApplicant(models.Model):
                     error,
                     exc_info=True,
                 )
+
+    def action_download_dossier_de_competences(self):
+        self.ensure_one()
+
+        if not self.applicant_extracted_json:
+            raise UserError('No extracted JSON data is available for this applicant.')
+
+        try:
+            applicant_data = json.loads(self.applicant_extracted_json)
+        except Exception as exc:
+            raise UserError('Cannot parse extracted JSON data: %s' % exc)
+
+        try:
+            from odoo.addons.scoring_candidates.utils import docx_generator
+        except ImportError:
+            try:
+                from scoring_candidates.utils import docx_generator
+            except ImportError as exc:
+                raise UserError('Dossier generation module not available: %s' % exc)
+
+        docx_bytes = docx_generator.generate_dossier_docx(applicant_data)
+        if not docx_bytes:
+            raise UserError('Could not generate dossier de competences document.')
+
+        import base64
+        bin_data = base64.b64encode(docx_bytes).decode('utf-8')
+
+        filename = 'dossier_de_competences_%s.docx' % self.id
+        attachment = self.env['ir.attachment'].create({
+            'name': filename,
+            'type': 'binary',
+            'datas': bin_data,
+            'res_model': self._name,
+            'res_id': self.id,
+            'mimetype': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        })
+
+        return {
+            'type': 'ir.actions.act_url',
+            'url': '/web/content/%s?download=true' % attachment.id,
+            'target': 'self',
+        }
 
     def _ai_feedback_to_html(self, feedback):
         if not isinstance(feedback, dict):
@@ -304,16 +350,65 @@ class HrApplicant(models.Model):
             'Content-Type': 'application/json',
         }
 
-        try:
-            response = requests.post(
-                self._GROQ_CHAT_COMPLETIONS_URL,
-                headers=headers,
-                json=request_payload,
-                timeout=120,
-            )
-            response.raise_for_status()
-        except requests.RequestException as error:
-            raise UserError('Groq request failed: %s' % error) from error
+        max_attempts = max(1, int(self._GROQ_MAX_RETRIES))
+        response = None
+        last_error = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = requests.post(
+                    self._GROQ_CHAT_COMPLETIONS_URL,
+                    headers=headers,
+                    json=request_payload,
+                    timeout=120,
+                )
+                response.raise_for_status()
+                break
+            except requests.RequestException as error:
+                last_error = error
+                status_code = getattr(getattr(error, 'response', None), 'status_code', None)
+                is_retryable_status = status_code in self._GROQ_RETRYABLE_STATUS_CODES
+                is_retryable_error = isinstance(error, (requests.Timeout, requests.ConnectionError))
+                should_retry = attempt < max_attempts and (is_retryable_status or is_retryable_error)
+
+                if should_retry:
+                    retry_after_header = (getattr(error.response, 'headers', {}) or {}).get('Retry-After')
+                    retry_after_seconds = 0.0
+                    if retry_after_header:
+                        try:
+                            retry_after_seconds = float(retry_after_header)
+                        except (TypeError, ValueError):
+                            retry_after_seconds = 0.0
+
+                    backoff_seconds = max(
+                        retry_after_seconds,
+                        float(self._GROQ_BACKOFF_BASE_SECONDS) * (2 ** (attempt - 1)),
+                    )
+                    _logger.warning(
+                        'Groq request failed (attempt %s/%s, status=%s). Retrying in %.1fs.',
+                        attempt,
+                        max_attempts,
+                        status_code,
+                        backoff_seconds,
+                    )
+                    time.sleep(backoff_seconds)
+                    continue
+
+                if status_code == 503:
+                    raise UserError(
+                        'Groq service is temporarily unavailable (HTTP 503). '
+                        'Please retry in a few moments or switch to another model.'
+                    ) from error
+
+                if status_code == 429:
+                    raise UserError(
+                        'Groq rate limit reached (HTTP 429). '
+                        'Please retry shortly or reduce concurrent scoring requests.'
+                    ) from error
+
+                raise UserError('Groq request failed: %s' % error) from error
+
+        if response is None:
+            raise UserError('Groq request failed after retries: %s' % (last_error or 'unknown error'))
 
         response_payload = response.json()
         choices = response_payload.get('choices') or []
