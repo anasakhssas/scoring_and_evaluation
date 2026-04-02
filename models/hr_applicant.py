@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import re
-import time
 import unicodedata
 from html import escape
 from datetime import date
@@ -18,9 +17,6 @@ _logger = logging.getLogger(__name__)
 class HrApplicant(models.Model):
     _inherit = 'hr.applicant'
     _GROQ_CHAT_COMPLETIONS_URL = 'https://api.groq.com/openai/v1/chat/completions'
-    _GROQ_RETRYABLE_STATUS_CODES = (408, 409, 425, 429, 500, 502, 503, 504)
-    _GROQ_MAX_RETRIES = 3
-    _GROQ_BACKOFF_BASE_SECONDS = 2
     _CV_EXTRACTION_CHUNK_SIZE = 16000
     _CV_EXTRACTION_CHUNK_OVERLAP = 1000
     _CV_EXTRACTION_MAX_CHUNKS = 3
@@ -100,6 +96,41 @@ class HrApplicant(models.Model):
         'dec': 12, 'december': 12,
         'decembre': 12,
     }
+    _SKILL_PERTINENT_CATEGORIES = (
+        'Soft Skills',
+        'Logiciels',
+        'Langages de programmation',
+        'Matériels',
+        'Méthodes',
+        'Normes et protocoles',
+        'Systèmes',
+        'Technologies',
+        'Marketing',
+    )
+    _SKILL_CATEGORY_ALIASES = {
+        'soft skills': 'Soft Skills',
+        'softskills': 'Soft Skills',
+        'logiciels': 'Logiciels',
+        'software': 'Logiciels',
+        'langages de programmation': 'Langages de programmation',
+        'langages programmation': 'Langages de programmation',
+        'programming languages': 'Langages de programmation',
+        'langages': 'Langages de programmation',
+        'materiels': 'Matériels',
+        'materiel': 'Matériels',
+        'hardware': 'Matériels',
+        'methodes': 'Méthodes',
+        'methodologies': 'Méthodes',
+        'methodology': 'Méthodes',
+        'normes et protocoles': 'Normes et protocoles',
+        'normes protocoles': 'Normes et protocoles',
+        'standards and protocols': 'Normes et protocoles',
+        'systemes': 'Systèmes',
+        'systeme': 'Systèmes',
+        'systems': 'Systèmes',
+        'technologies': 'Technologies',
+        'marketing': 'Marketing',
+    }
 
     score_total = fields.Integer(string='Score Total', readonly=True, copy=False)
     ai_feedback = fields.Html(string='AI Feedback', readonly=True, copy=False)
@@ -141,48 +172,6 @@ class HrApplicant(models.Model):
                     error,
                     exc_info=True,
                 )
-
-    def action_download_dossier_de_competences(self):
-        self.ensure_one()
-
-        if not self.applicant_extracted_json:
-            raise UserError('No extracted JSON data is available for this applicant.')
-
-        try:
-            applicant_data = json.loads(self.applicant_extracted_json)
-        except Exception as exc:
-            raise UserError('Cannot parse extracted JSON data: %s' % exc)
-
-        try:
-            from odoo.addons.scoring_candidates.utils import docx_generator
-        except ImportError:
-            try:
-                from scoring_candidates.utils import docx_generator
-            except ImportError as exc:
-                raise UserError('Dossier generation module not available: %s' % exc)
-
-        docx_bytes = docx_generator.generate_dossier_docx(applicant_data)
-        if not docx_bytes:
-            raise UserError('Could not generate dossier de competences document.')
-
-        import base64
-        bin_data = base64.b64encode(docx_bytes).decode('utf-8')
-
-        filename = 'dossier_de_competences_%s.docx' % self.id
-        attachment = self.env['ir.attachment'].create({
-            'name': filename,
-            'type': 'binary',
-            'datas': bin_data,
-            'res_model': self._name,
-            'res_id': self.id,
-            'mimetype': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        })
-
-        return {
-            'type': 'ir.actions.act_url',
-            'url': '/web/content/%s?download=true' % attachment.id,
-            'target': 'self',
-        }
 
     def _ai_feedback_to_html(self, feedback):
         if not isinstance(feedback, dict):
@@ -350,65 +339,16 @@ class HrApplicant(models.Model):
             'Content-Type': 'application/json',
         }
 
-        max_attempts = max(1, int(self._GROQ_MAX_RETRIES))
-        response = None
-        last_error = None
-        for attempt in range(1, max_attempts + 1):
-            try:
-                response = requests.post(
-                    self._GROQ_CHAT_COMPLETIONS_URL,
-                    headers=headers,
-                    json=request_payload,
-                    timeout=120,
-                )
-                response.raise_for_status()
-                break
-            except requests.RequestException as error:
-                last_error = error
-                status_code = getattr(getattr(error, 'response', None), 'status_code', None)
-                is_retryable_status = status_code in self._GROQ_RETRYABLE_STATUS_CODES
-                is_retryable_error = isinstance(error, (requests.Timeout, requests.ConnectionError))
-                should_retry = attempt < max_attempts and (is_retryable_status or is_retryable_error)
-
-                if should_retry:
-                    retry_after_header = (getattr(error.response, 'headers', {}) or {}).get('Retry-After')
-                    retry_after_seconds = 0.0
-                    if retry_after_header:
-                        try:
-                            retry_after_seconds = float(retry_after_header)
-                        except (TypeError, ValueError):
-                            retry_after_seconds = 0.0
-
-                    backoff_seconds = max(
-                        retry_after_seconds,
-                        float(self._GROQ_BACKOFF_BASE_SECONDS) * (2 ** (attempt - 1)),
-                    )
-                    _logger.warning(
-                        'Groq request failed (attempt %s/%s, status=%s). Retrying in %.1fs.',
-                        attempt,
-                        max_attempts,
-                        status_code,
-                        backoff_seconds,
-                    )
-                    time.sleep(backoff_seconds)
-                    continue
-
-                if status_code == 503:
-                    raise UserError(
-                        'Groq service is temporarily unavailable (HTTP 503). '
-                        'Please retry in a few moments or switch to another model.'
-                    ) from error
-
-                if status_code == 429:
-                    raise UserError(
-                        'Groq rate limit reached (HTTP 429). '
-                        'Please retry shortly or reduce concurrent scoring requests.'
-                    ) from error
-
-                raise UserError('Groq request failed: %s' % error) from error
-
-        if response is None:
-            raise UserError('Groq request failed after retries: %s' % (last_error or 'unknown error'))
+        try:
+            response = requests.post(
+                self._GROQ_CHAT_COMPLETIONS_URL,
+                headers=headers,
+                json=request_payload,
+                timeout=120,
+            )
+            response.raise_for_status()
+        except requests.RequestException as error:
+            raise UserError('Groq request failed: %s' % error) from error
 
         response_payload = response.json()
         choices = response_payload.get('choices') or []
@@ -837,6 +777,115 @@ class HrApplicant(models.Model):
         except (TypeError, ValueError):
             return ''
 
+    def _normalize_skill_category_key(self, value):
+        normalized = str(value or '').strip().lower()
+        normalized = ''.join(
+            character
+            for character in unicodedata.normalize('NFD', normalized)
+            if unicodedata.category(character) != 'Mn'
+        )
+        normalized = re.sub(r'[^a-z0-9\s]', ' ', normalized)
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+        return normalized
+
+    def _empty_skill_categories(self):
+        return {
+            category: []
+            for category in self._SKILL_PERTINENT_CATEGORIES
+        }
+
+    def _normalize_skill_category_name(self, raw_category):
+        category_key = self._normalize_skill_category_key(raw_category)
+        if not category_key:
+            return ''
+        if category_key in self._SKILL_CATEGORY_ALIASES:
+            return self._SKILL_CATEGORY_ALIASES[category_key]
+
+        for category in self._SKILL_PERTINENT_CATEGORIES:
+            if self._normalize_skill_category_key(category) == category_key:
+                return category
+        return ''
+
+    def _guess_skill_category(self, skill_name):
+        skill_key = self._normalize_skill_key(skill_name)
+        if not skill_key:
+            return 'Technologies'
+
+        if re.search(r'\b(communication|leadership|teamwork|collaboration|adaptability|creativity|problem solving|negotiation|autonomy|empathy|time management)\b', skill_key):
+            return 'Soft Skills'
+        if re.search(r'\b(excel|power bi|tableau|sap|salesforce|figma|photoshop|illustrator|autocad|solidworks|jira|confluence|odoo|ms project|notion|wordpress)\b', skill_key):
+            return 'Logiciels'
+        if re.search(r'\b(python|java|javascript|typescript|php|ruby|go|golang|rust|kotlin|swift|scala|perl|r\b|matlab|sql|plsql|bash|powershell|c\+\+|c#|c\b|objective c|dart|vba)\b', skill_key):
+            return 'Langages de programmation'
+        if re.search(r'\b(arduino|raspberry|plc|automate|microcontroller|fpga|sensor|capteur|oscilloscope|router|switch|server rack|printer|scanner)\b', skill_key):
+            return 'Matériels'
+        if re.search(r'\b(agile|scrum|kanban|lean|six sigma|itil|waterfall|safe|design thinking|prince2)\b', skill_key):
+            return 'Méthodes'
+        if re.search(r'\b(iso\s*\d+|iso|rgpd|gdpr|tcp/ip|http|https|mqtt|opc ua|oauth|tls|ssl|pci dss|rest|soap|hl7)\b', skill_key):
+            return 'Normes et protocoles'
+        if re.search(r'\b(linux|windows|macos|unix|ubuntu|debian|red hat|android|ios|vmware|citrix)\b', skill_key):
+            return 'Systèmes'
+        if re.search(r'\b(seo|sem|google ads|meta ads|content marketing|email marketing|marketing automation|crm campaign|branding|growth hacking)\b', skill_key):
+            return 'Marketing'
+        return 'Technologies'
+
+    def _normalize_experience_skills(self, raw_skills):
+        categorized_skills = self._empty_skill_categories()
+        seen_skills_by_category = {
+            category: set()
+            for category in categorized_skills
+        }
+
+        if isinstance(raw_skills, dict):
+            source_items = raw_skills.items()
+        elif isinstance(raw_skills, list):
+            source_items = [('Technologies', raw_skills)]
+        else:
+            source_items = []
+
+        for raw_category, raw_values in source_items:
+            category_name = self._normalize_skill_category_name(raw_category)
+
+            if isinstance(raw_values, list):
+                values = raw_values
+            elif isinstance(raw_values, str):
+                values = [raw_values]
+            else:
+                continue
+
+            for raw_value in values:
+                skill_name = str(raw_value).strip()
+                if not skill_name:
+                    continue
+
+                target_category = category_name or self._guess_skill_category(skill_name)
+                if target_category not in categorized_skills:
+                    target_category = 'Technologies'
+
+                fingerprint = skill_name.lower()
+                if fingerprint in seen_skills_by_category[target_category]:
+                    continue
+
+                seen_skills_by_category[target_category].add(fingerprint)
+                categorized_skills[target_category].append(skill_name)
+
+        return categorized_skills
+
+    def _iter_experience_skill_names(self, raw_skills):
+        if isinstance(raw_skills, dict):
+            for category_name in self._SKILL_PERTINENT_CATEGORIES:
+                for skill_name in (raw_skills.get(category_name) or []):
+                    cleaned = str(skill_name).strip()
+                    if cleaned:
+                        yield cleaned
+            return
+
+        if isinstance(raw_skills, list):
+            for skill_name in raw_skills:
+                cleaned = str(skill_name).strip()
+                if cleaned:
+                    yield cleaned
+
     def _normalize_ai_profile(self, payload):
         if not isinstance(payload, dict):
             payload = {}
@@ -850,21 +899,18 @@ class HrApplicant(models.Model):
             if not isinstance(experience, dict):
                 continue
             tasks = experience.get('tasks') if isinstance(experience.get('tasks'), list) else []
-            skills_pertinents = (
-                experience.get('skills_pertinents')
-                if isinstance(experience.get('skills_pertinents'), list)
-                else []
-            )
+            skills_pertinents = self._normalize_experience_skills(experience.get('skills_pertinents'))
             normalized_experiences.append({
                 'title': experience.get('title') or '',
                 'company': experience.get('company') or '',
                 'duration': self._normalize_duration_text(experience.get('duration')),
+                'general_context': str(experience.get('general_context') or '').strip(),
+                'project_topic': str(experience.get('project_topic') or '').strip(),
+                'responsibilities': str(experience.get('responsibilities') or '').strip(),
+                'work_done': str(experience.get('work_done') or '').strip(),
+                'results_obtained': str(experience.get('results_obtained') or '').strip(),
                 'tasks': [str(task).strip() for task in tasks if str(task).strip()],
-                'skills_pertinents': [
-                    str(skill_name).strip()
-                    for skill_name in skills_pertinents
-                    if str(skill_name).strip()
-                ],
+                'skills_pertinents': skills_pertinents,
             })
 
         section_general_skills = {}
@@ -892,7 +938,7 @@ class HrApplicant(models.Model):
         # and only strong additional skills explicitly present in the CV skills section.
         relevant_skill_names = set()
         for experience in normalized_experiences:
-            for skill_name in (experience.get('skills_pertinents') or []):
+            for skill_name in self._iter_experience_skill_names(experience.get('skills_pertinents')):
                 canonical_name = self._canonical_skill_name(skill_name)
                 if canonical_name:
                     relevant_skill_names.add(canonical_name)
@@ -946,7 +992,9 @@ class HrApplicant(models.Model):
             'You are an expert CV parser. '\
             'Return ONLY valid JSON with this exact top-level structure: '\
             '{"id": int, "name": str, "education": {"degree": str, "field": str, "university": str}, '\
-            '"experiences": [{"title": str, "company": str, "duration": str, "tasks": [str], "skills_pertinents": [str]}], '\
+            '"experiences": [{"title": str, "company": str, "duration": str, "general_context": str, "project_topic": str, "responsibilities": str, "work_done": str, "results_obtained": str, "tasks": [str], "skills_pertinents": {'\
+            '"Soft Skills": [str], "Logiciels": [str], "Langages de programmation": [str], "Matériels": [str], '\
+            '"Méthodes": [str], "Normes et protocoles": [str], "Systèmes": [str], "Technologies": [str], "Marketing": [str]}}], '\
             '"experience_years": float, '\
             '"certification": [str], '\
             '"skills": {"skill_name": str_level}}. '\
@@ -968,7 +1016,8 @@ class HrApplicant(models.Model):
                 'Extract CV data from the text below. '\
                 'Set "id" to %s. '\
                 'If a value is missing, use empty string, empty list, or empty object. '\
-                'Always include skills_pertinents for each experience when possible. '\
+                'For each experience, always include: general_context, project_topic, responsibilities, work_done, results_obtained. '\
+                'Always include skills_pertinents as a dictionary of categories for each experience. '\
                 'In top-level skills, include languages and explicit skills-section items first. '\
                 'Use string proficiency levels (not numeric). '\
                 'Chunk %s/%s of a longer CV.\n\nCV TEXT:\n%s'
@@ -1236,6 +1285,17 @@ class HrApplicant(models.Model):
             'filename': attachment.name,
             'mimetype': attachment.mimetype,
         }
+
+    def get_applicant_extracted_payload(self):
+        self.ensure_one()
+        raw_payload = self.applicant_extracted_json or '{}'
+        if isinstance(raw_payload, dict):
+            return raw_payload
+        try:
+            payload = json.loads(raw_payload)
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
 
     def get_extracted_applicant_data(self):
         self.ensure_one()

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+        <record id="view_applicant_doosier_competences_wizard" model="ir.ui.view">
+            <field name="name">view.applicant.doosier.competences.wizard</field>
+            <field name="model">dca.wizard</field>
+            <field name="arch" type="xml">
+                <form string="Dossier de Competences">
+                    <group col="4" colspan="6">
+                        <field name="report_models"/>
+                        <newline/>
+                        <field name="applicant_id" invisible="True"/>
+                    </group>
+                    <footer>
+                        <button name="print_report" string="Print" type="object" class="btn-primary" data-hotkey="q"/>
+                        <button string="Cancel" class="btn-secondary" special="cancel" data-hotkey="x" />
+                    </footer>
+                </form>
+            </field>
+        </record>
+
+        <record id="action_view_applicant_doosier_competences_wizard" model="ir.actions.act_window">
+            <field name="name">Dossier de Competences</field>
+            <field name="res_model">dca.wizard</field>
+            <field name="view_mode">form</field>
+            <field name="target">new</field>
+            <field name="binding_model_id" ref="hr_recruitment.model_hr_applicant"/>
+            <field name="binding_type">report</field>
+            <field name="context">{'default_applicant_id': active_id}</field>
+        </record>
+
+</odoo>

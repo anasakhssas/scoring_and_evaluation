@@ -29,7 +29,6 @@
                     <field name="score_total" readonly="1"/>
                     <field name="ai_feedback" widget="html" readonly="1"/>
                     <field name="applicant_extracted_json" widget="text" readonly="1"/>
-                    <button name="action_download_dossier_de_competences" type="object" string="Dossier de Compétences" class="oe_highlight"/>
                 </group>
             </xpath>
         </field>

@@ -1,0 +1,241 @@
+<odoo>
+    <template id="print_report_simplify">
+        <t t-call="web.basic_layout">
+            <t t-foreach="docs" t-as="o">
+                <t t-set="app" t-value="o.get_applicant_extracted_payload()"/>
+                <t t-set="education" t-value="app.get('education') if isinstance(app.get('education'), dict) else {}"/>
+                <t t-set="skills" t-value="app.get('skills') if isinstance(app.get('skills'), dict) else {}"/>
+                <t t-set="experiences" t-value="app.get('experiences') if isinstance(app.get('experiences'), list) else []"/>
+                <t t-set="certification" t-value="app.get('certification') if isinstance(app.get('certification'), list) else []"/>
+                <t t-set="language_rows" t-value="[(k, v) for k, v in skills.items() if str(v).upper() in ('A1', 'A2', 'B1', 'B2', 'C1', 'C2')]"/>
+                <t t-set="category_order" t-value="[
+                    'Soft Skills',
+                    'Langues',
+                    'Logiciels',
+                    'Langages de programmation',
+                    'Matériels',
+                    'Méthodes',
+                    'Normes et protocoles',
+                    'Systèmes',
+                    'Technologies',
+                    'Marketing'
+                ]"/>
+                <div class="page" style="font-family: 'DejaVu Sans', Arial, sans-serif; color: #1f1f1f; font-size: 12px;">
+                    <br/>
+                    <!-- Competences Title -->
+                    <div style="border-bottom: 2px solid solid; margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between;">
+                        <h3 style="margin: 0; color: #0077b6; font-size: 16px; font-weight: 700;">Compétences, technologies &amp; secteurs d'intervention</h3>
+                        <!-- <div style="flex-grow: 1; margin-left: 10px; height: 10px;">
+                            <div style="border-top: 3px solid #ff0000; margin-bottom: 2px;"></div>
+                            <div style="border-top: 3px solid #0077b6; margin-bottom: 2px;"></div>
+                            <div style="border-top: 3px solid #ffb703;"></div>
+                        </div> -->
+                    </div>
+
+                    <table style="width: 90%; border-collapse: collapse; border: 1px solid #777; margin-bottom: 40px; margin-top:15px; margin: 40px auto 40px auto;">
+                        <tbody>
+                            <t t-foreach="category_order" t-as="category_name">
+                                <tr>
+                                    <td style="width: 30%; background: #e9ecef; border: 1px solid #777; padding: 7px 8px; font-weight: 700; color: #333;">
+                                        <span t-esc="category_name"/>
+                                    </td>
+                                    <td style="border: 1px solid #777; padding: 7px 8px;">
+                                        <t t-if="category_name == 'Langues'">
+                                            <t t-if="language_rows">
+                                                <span t-esc="', '.join([name for name, level in language_rows])"/>
+                                            </t>
+                                            <t t-else="">
+                                                <span>—</span>
+                                            </t>
+                                        </t>
+                                        <t t-else="">
+                                            <t t-set="values" t-value="[]"/>
+                                            <t t-foreach="experiences" t-as="exp_cat">
+                                                <t t-set="cat_dict" t-value="exp_cat.get('skills_pertinents') if isinstance(exp_cat.get('skills_pertinents'), dict) else {}"/>
+                                                <t t-set="raw_items" t-value="cat_dict.get(category_name) if isinstance(cat_dict.get(category_name), list) else []"/>
+                                                <t t-foreach="raw_items" t-as="item">
+                                                    <t t-if="str(item).strip() and str(item).strip() not in values">
+                                                        <t t-set="values" t-value="values + [str(item).strip()]"/>
+                                                    </t>
+                                                </t>
+                                            </t>
+                                            <t t-if="values">
+                                                <span t-esc="', '.join(values)"/>
+                                            </t>
+                                            <t t-else="">
+                                                <span>—</span>
+                                            </t>
+                                        </t>
+                                    </td>
+                                </tr>
+                            </t>
+                        </tbody>
+                    </table>
+                    <br/>
+                    <br/>
+                    <br/>
+
+                    <!-- Formation Title -->
+                    <div style="border-bottom: 2px solid solid; margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between;">
+                        <h3 style="margin: 0; color: #0077b6; font-size: 16px; font-weight: 700;">Formation, habilitations &amp; langues</h3>
+                        <!-- <div style="flex-grow: 1; margin-left: 10px; height: 10px;">
+                            <div style="border-top: 3px solid #ff0000; margin-bottom: 2px;"></div>
+                            <div style="border-top: 3px solid #0077b6; margin-bottom: 2px;"></div>
+                            <div style="border-top: 3px solid #ffb703;"></div>
+                        </div> -->
+                    </div>
+
+                    <table style="width: 90%; border-collapse: collapse; border: 1px solid #777; margin-bottom: 40px; margin-top: 15px; margin: 40px auto 40px auto;">
+                        <tbody>
+                            <tr>
+                                <td style="width: 30%; background: #e9ecef; border: 1px solid #777; padding: 7px 8px; font-weight: 700; color: #333;">Formation</td>
+                                <td style="width: 45%; border: 1px solid #777; padding: 7px 8px;">
+                                    <span t-esc="education.get('degree') or ''"/>
+                                    <t t-if="education.get('field')">
+                                        <span> - </span><span t-esc="education.get('field')"/>
+                                    </t>
+                                    <t t-if="education.get('university')">
+                                        <span> - </span><span t-esc="education.get('university')"/>
+                                    </t>
+                                </td>
+                                <td style="width: 25%; border: 1px solid #777; padding: 7px 8px; text-align: center; font-weight: 700;">
+                                    <!-- Here you can map the date if you have it in payload, normally I see like 'Sep 2022 - Jul 2025' -->
+                                    <span>—</span>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="background: #e9ecef; border: 1px solid #777; padding: 7px 8px; font-weight: 700; color: #333;">Habilitations</td>
+                                <td style="border: 1px solid #777; padding: 7px 8px;">
+                                    <t t-if="certification">
+                                        <span t-esc="', '.join(certification)"/>
+                                    </t>
+                                    <t t-else="">
+                                        <span>—</span>
+                                    </t>
+                                </td>
+                                <td style="border: 1px solid #777; padding: 7px 8px;"></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <br/>
+                    <br/>
+                    <br/>
+
+                    <!-- Projets Title -->
+                    <div style="border-bottom: 2px solid solid; margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between; page-break-before: always;">
+                        <h3 style="margin: 0; color: #0077b6; font-size: 16px; font-weight: 700;">Projets, réalisations &amp; responsabilités</h3>
+                        <!-- <div style="flex-grow: 1; margin-left: 10px; height: 10px;">
+                            <div style="border-top: 3px solid #ff0000; margin-bottom: 2px;"></div>
+                            <div style="border-top: 3px solid #0077b6; margin-bottom: 2px;"></div>
+                            <div style="border-top: 3px solid #ffb703;"></div>
+                        </div> -->
+                    </div>
+
+                    <div style="margin-top:20px;">
+                    <t t-if="experiences">
+                        <t t-foreach="experiences" t-as="exp">
+                            <div style="margin-bottom: 40px; page-break-inside: avoid;">
+                                <div style="display: flex; justify-content: space-between; border-bottom: 2px solid #ccc; padding-bottom: 4px; margin-bottom: 10px;">
+                                    <strong style="font-size: 16px; color: #333;" t-esc="exp.get('company') or ''"/>
+                                    <strong style="font-size: 14px; color: #333;">
+                                        <t t-if="exp.get('duration')"><span t-esc="exp.get('duration')"/></t>
+                                    </strong>
+                                </div>
+
+                                <table style="width: 90%; border-collapse: collapse; margin-bottom: 10px; margin: 40px auto 40px auto;">
+                                    <tbody>
+                                        <tr>
+                                        <td style="width: 25%; padding: 4px 8px; font-weight: 700; color: #333; vertical-align: top;">Contexte général :</td>
+                                        <td style="padding: 4px 8px; vertical-align: top; text-align: justify;">
+                                            <span t-esc="exp.get('general_context') or ''"/>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 4px 8px; font-weight: 700; color: #333; vertical-align: top;">Sujet du projet :</td>
+                                        <td style="padding: 4px 8px; vertical-align: top; text-align: justify;">
+                                             <!-- If payload has specific subject mapped, place here -->
+                                            <span t-esc="exp.get('project_topic') or ''"/>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 4px 8px; font-weight: 700; color: #333; vertical-align: top;">Responsabilités occupées :</td>
+                                        <td style="padding: 4px 8px; vertical-align: top; text-align: justify;">
+                                                <span t-esc="exp.get('responsibilities') or ''"/>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 4px 8px; font-weight: 700; color: #333; vertical-align: top;">Travail réalisé :</td>
+                                        <td style="padding: 4px 8px; vertical-align: top; text-align: justify;">
+                                            <!-- Usually part of tasks as well in current payload -->
+                                            <span t-esc="exp.get('work_done') or ''" />
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td style="padding: 4px 8px; font-weight: 700; color: #333; vertical-align: top;">Résultats obtenus :</td>
+                                        <td style="padding: 4px 8px; vertical-align: top; text-align: justify;">
+                                            <span t-esc="exp.get('results_obtained') or ''"/>
+                                        </td>
+                                    </tr>
+                                    </tbody>
+                                </table>
+
+                                <table style="width: 90%; border-collapse: collapse; background: #e9ecef; margin: 40px auto 40px auto;">
+                                    <tbody>
+                                        <tr>
+                                            <td style="width: 25%; padding: 8px; font-weight: 700; color: #333; border-right: 1px solid #fff; vertical-align: middle;">Environnement<br/>technique</td>
+                                            <td style="padding: 0;">
+                                                <t t-set="cats" t-value="exp.get('skills_pertinents') if isinstance(exp.get('skills_pertinents'), dict) else {}"/>
+                                                <table style="width: 90%; border-collapse: collapse; margin: 40px auto 40px auto;">
+                                                    <tbody>
+                                                        <t t-foreach="category_order" t-as="env_category">
+                                                            <tr>
+                                                                <td style="width: 40%; padding: 2px 8px; font-size: 11px; color: #333;">
+                                                                    <span t-esc="env_category"/>
+                                                                </td>
+                                                                <td style="padding: 2px 8px; font-size: 11px;">
+                                                                    <t t-if="env_category == 'Langues'">
+                                                                        <t t-if="language_rows">
+                                                                            <span t-esc="', '.join([name for name, level in language_rows])"/>
+                                                                        </t>
+                                                                        <t t-else=""><span>—</span></t>
+                                                                    </t>
+                                                                    <t t-else="">
+                                                                        <t t-set="env_values" t-value="cats.get(env_category) if isinstance(cats.get(env_category), list) else []"/>
+                                                                        <t t-if="env_values">
+                                                                            <span t-esc="', '.join(env_values)"/>
+                                                                        </t>
+                                                                        <t t-else=""><span>—</span></t>
+                                                                    </t>
+                                                                </td>
+                                                            </tr>
+                                                        </t>
+                                                    </tbody>
+                                                </table>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </t>
+                    </t>
+                    <t t-else="">
+                        <p style="margin-top: 8px;">Aucune experience extraite.</p>
+                    </t>
+                    </div>
+                </div>
+            </t>
+        </t>
+    </template>
+
+    <record id="action_print_dca_simplify" model="ir.actions.report">
+        <field name="name">Print dca simplify</field>
+        <field name="model">hr.applicant</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">scoring_candidates.print_report_simplify</field>
+        <field name="report_file">dossier_comp</field>
+        <field name="print_report_name">("Dossier de Compétences " + object.partner_name)</field>
+
+        <!-- <field name="binding_model_id" ref="model_hr_applicant"/>
+        <field name="binding_type">report</field> -->
+    </record>
+</odoo>
