@@ -23,14 +23,18 @@
                 <div class="page" style="font-family: 'DejaVu Sans', Arial, sans-serif; color: #1f1f1f; font-size: 12px;">
                     <br/>
                     <!-- Competences Title -->
-                    <div style="border-bottom: 2px solid solid; margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between;">
-                        <h3 style="margin: 0; color: #0077b6; font-size: 16px; font-weight: 700;">Compétences, technologies &amp; secteurs d'intervention</h3>
-                        <!-- <div style="flex-grow: 1; margin-left: 10px; height: 10px;">
-                            <div style="border-top: 3px solid #ff0000; margin-bottom: 2px;"></div>
-                            <div style="border-top: 3px solid #0077b6; margin-bottom: 2px;"></div>
-                            <div style="border-top: 3px solid #ffb703;"></div>
-                        </div> -->
-                    </div>
+                    <table style="width: 90%; border-collapse: collapse; margin: 0 auto 4px auto;">
+                        <tr>
+                            <td style="vertical-align: middle; white-space: nowrap; padding: 0 10px 0 0; width: 1%;">
+                                <h3 style="margin: 0; color: #0077b6; font-size: 16px; font-weight: 700; white-space: nowrap;">Compétences, technologies &amp; secteurs d'intervention</h3>
+                            </td>
+                            <!-- <td style="vertical-align: middle; padding: 0; width: 99%;">
+                                <div style="border-top: 2px solid #ff0000; margin: 0 0 3px 0;"></div>
+                                <div style="border-top: 2px solid #0077b6; margin: 0 0 3px 0;"></div>
+                                <div style="border-top: 2px solid #ffb703; margin: 0;"></div>
+                            </td> -->
+                        </tr>
+                    </table>
 
                     <table style="width: 90%; border-collapse: collapse; border: 1px solid #777; margin-bottom: 40px; margin-top:15px; margin: 40px auto 40px auto;">
                         <tbody>
@@ -76,14 +80,18 @@
                     <br/>
 
                     <!-- Formation Title -->
-                    <div style="border-bottom: 2px solid solid; margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between;">
-                        <h3 style="margin: 0; color: #0077b6; font-size: 16px; font-weight: 700;">Formation, habilitations &amp; langues</h3>
-                        <!-- <div style="flex-grow: 1; margin-left: 10px; height: 10px;">
-                            <div style="border-top: 3px solid #ff0000; margin-bottom: 2px;"></div>
-                            <div style="border-top: 3px solid #0077b6; margin-bottom: 2px;"></div>
-                            <div style="border-top: 3px solid #ffb703;"></div>
-                        </div> -->
-                    </div>
+                    <table style="width: 90%; border-collapse: collapse; margin: 0 auto 4px auto;">
+                        <tr>
+                            <td style="vertical-align: middle; white-space: nowrap; padding: 0 10px 0 0; width: 1%;">
+                                <h3 style="margin: 0; color: #0077b6; font-size: 16px; font-weight: 700; white-space: nowrap;">Formation, habilitations &amp; langues</h3>
+                            </td>
+                            <!-- <td style="vertical-align: middle; padding: 0; width: 99%;">
+                                <div style="border-top: 2px solid #ff0000; margin: 0 0 3px 0;"></div>
+                                <div style="border-top: 2px solid #0077b6; margin: 0 0 3px 0;"></div>
+                                <div style="border-top: 2px solid #ffb703; margin: 0;"></div>
+                            </td> -->
+                        </tr>
+                    </table>
 
                     <table style="width: 90%; border-collapse: collapse; border: 1px solid #777; margin-bottom: 40px; margin-top: 15px; margin: 40px auto 40px auto;">
                         <tbody>
@@ -122,25 +130,33 @@
                     <br/>
 
                     <!-- Projets Title -->
-                    <div style="border-bottom: 2px solid solid; margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between; page-break-before: always;">
-                        <h3 style="margin: 0; color: #0077b6; font-size: 16px; font-weight: 700;">Projets, réalisations &amp; responsabilités</h3>
-                        <!-- <div style="flex-grow: 1; margin-left: 10px; height: 10px;">
-                            <div style="border-top: 3px solid #ff0000; margin-bottom: 2px;"></div>
-                            <div style="border-top: 3px solid #0077b6; margin-bottom: 2px;"></div>
-                            <div style="border-top: 3px solid #ffb703;"></div>
-                        </div> -->
-                    </div>
+                    <table style="width: 90%; border-collapse: collapse; margin: 0 auto 4px auto; page-break-before: always;">
+                    <tr>
+                        <td style="vertical-align: middle; white-space: nowrap; padding: 0 10px 0 0; width: 1%;">
+                            <h3 style="margin: 0; color: #0077b6; font-size: 16px; font-weight: 700; white-space: nowrap;">Projets, réalisations &amp; responsabilités</h3>
+                        </td>
+                        <!-- <td style="vertical-align: middle; padding: 0; width: 99%;">
+                            <div style="border-top: 2px solid #ff0000; margin: 0 0 3px 0;"></div>
+                            <div style="border-top: 2px solid #0077b6; margin: 0 0 3px 0;"></div>
+                            <div style="border-top: 2px solid #ffb703; margin: 0;"></div>
+                        </td> -->
+                    </tr>
+                </table>
 
                     <div style="margin-top:20px;">
-                    <t t-if="experiences">
-                        <t t-foreach="experiences" t-as="exp">
-                            <div style="margin-bottom: 40px; page-break-inside: avoid;">
-                                <div style="display: flex; justify-content: space-between; border-bottom: 2px solid #ccc; padding-bottom: 4px; margin-bottom: 10px;">
+                <t t-if="experiences">
+                    <t t-foreach="experiences" t-as="exp">
+                        <div style="margin-bottom: 40px; page-break-inside: avoid;">
+                            <div style="width: 90%; border-bottom: 2px solid #ccc; padding-bottom: 4px; margin: 0 auto 10px auto; clear: both; overflow: hidden;">
+                                <div style="float: left; width: 70%;">
                                     <strong style="font-size: 16px; color: #333;" t-esc="exp.get('company') or ''"/>
+                                </div>
+                                <div style="float: right; width: 30%; text-align: right;">
                                     <strong style="font-size: 14px; color: #333;">
                                         <t t-if="exp.get('duration')"><span t-esc="exp.get('duration')"/></t>
                                     </strong>
                                 </div>
+                            </div>
 
                                 <table style="width: 90%; border-collapse: collapse; margin-bottom: 10px; margin: 40px auto 40px auto;">
                                     <tbody>
@@ -185,7 +201,7 @@
                                             <td style="width: 25%; padding: 8px; font-weight: 700; color: #333; border-right: 1px solid #fff; vertical-align: middle;">Environnement<br/>technique</td>
                                             <td style="padding: 0;">
                                                 <t t-set="cats" t-value="exp.get('skills_pertinents') if isinstance(exp.get('skills_pertinents'), dict) else {}"/>
-                                                <table style="width: 90%; border-collapse: collapse; margin: 40px auto 40px auto;">
+                                                <table style="width: 100%; border-collapse: collapse; margin: 0;">
                                                     <tbody>
                                                         <t t-foreach="category_order" t-as="env_category">
                                                             <tr>

@@ -10,6 +10,7 @@
                         <field name="report_models"/>
                         <newline/>
                         <field name="applicant_id" invisible="True"/>
+                        <field name="code_job"/>
                     </group>
                     <footer>
                         <button name="print_report" string="Print" type="object" class="btn-primary" data-hotkey="q"/>

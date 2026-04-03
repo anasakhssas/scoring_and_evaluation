@@ -413,6 +413,40 @@ class HrApplicant(models.Model):
             start += step
         return chunks
 
+    def _merge_unique_text_list(self, base_values, incoming_values):
+        merged_values = []
+        seen = set()
+        for source_values in (base_values or [], incoming_values or []):
+            for raw_value in source_values:
+                text = str(raw_value).strip()
+                if not text:
+                    continue
+                fingerprint = text.lower()
+                if fingerprint in seen:
+                    continue
+                seen.add(fingerprint)
+                merged_values.append(text)
+        return merged_values
+
+    def _pick_richer_text(self, current_value, new_value):
+        current_text = str(current_value or '').strip()
+        new_text = str(new_value or '').strip()
+        if not current_text:
+            return new_text
+        if not new_text:
+            return current_text
+        return new_text if len(new_text) > len(current_text) else current_text
+
+    def _merge_experience_skill_categories(self, base_skills, incoming_skills):
+        merged_skills = self._normalize_experience_skills(base_skills)
+        incoming_normalized = self._normalize_experience_skills(incoming_skills)
+        for category_name in self._SKILL_PERTINENT_CATEGORIES:
+            merged_skills[category_name] = self._merge_unique_text_list(
+                merged_skills.get(category_name),
+                incoming_normalized.get(category_name),
+            )
+        return merged_skills
+
     def _merge_profiles(self, profiles):
         cleaned_profiles = [profile for profile in (profiles or []) if isinstance(profile, dict)]
         if not cleaned_profiles:
@@ -437,7 +471,7 @@ class HrApplicant(models.Model):
             'skills': {},
         }
 
-        experience_seen = set()
+        experience_by_fingerprint = {}
         certification_seen = set()
         skill_scores = {}
         language_skill_ranks = {}
@@ -459,10 +493,45 @@ class HrApplicant(models.Model):
                     str(experience.get('company') or '').strip().lower(),
                     str(experience.get('duration') or '').strip().lower(),
                 )
-                if fingerprint in experience_seen:
+                if not any(fingerprint):
                     continue
-                experience_seen.add(fingerprint)
-                merged['experiences'].append(experience)
+
+                if fingerprint not in experience_by_fingerprint:
+                    normalized_experience = dict(experience)
+                    normalized_experience['tasks'] = self._merge_unique_text_list(
+                        normalized_experience.get('tasks'),
+                        [],
+                    )
+                    normalized_experience['skills_pertinents'] = self._normalize_experience_skills(
+                        normalized_experience.get('skills_pertinents')
+                    )
+                    normalized_experience = self._enrich_experience_sections_from_tasks(normalized_experience)
+                    merged['experiences'].append(normalized_experience)
+                    experience_by_fingerprint[fingerprint] = normalized_experience
+                    continue
+
+                existing_experience = experience_by_fingerprint[fingerprint]
+                for field_name in (
+                    'general_context',
+                    'project_topic',
+                    'responsibilities',
+                    'work_done',
+                    'results_obtained',
+                ):
+                    existing_experience[field_name] = self._pick_richer_text(
+                        existing_experience.get(field_name),
+                        experience.get(field_name),
+                    )
+
+                existing_experience['tasks'] = self._merge_unique_text_list(
+                    existing_experience.get('tasks'),
+                    experience.get('tasks') if isinstance(experience.get('tasks'), list) else [],
+                )
+                existing_experience['skills_pertinents'] = self._merge_experience_skill_categories(
+                    existing_experience.get('skills_pertinents'),
+                    experience.get('skills_pertinents'),
+                )
+                self._enrich_experience_sections_from_tasks(existing_experience)
 
             for certification in (profile.get('certification') or []):
                 normalized_certification = str(certification or '').strip()
@@ -886,6 +955,72 @@ class HrApplicant(models.Model):
                 if cleaned:
                     yield cleaned
 
+    def _normalize_task_sentences(self, tasks):
+        normalized_tasks = []
+        seen = set()
+        for raw_task in (tasks or []):
+            task_text = str(raw_task or '').strip()
+            if not task_text:
+                continue
+            task_text = re.sub(r'\s+', ' ', task_text)
+            fingerprint = task_text.lower()
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+            normalized_tasks.append(task_text)
+        return normalized_tasks
+
+    def _build_task_based_narrative_sections(self, tasks):
+        normalized_tasks = self._normalize_task_sentences(tasks)
+        if not normalized_tasks:
+            return {}
+
+        tasks_block = '; '.join(normalized_tasks)
+        return {
+            'general_context': (
+                'Le contexte general de la mission est constitue des activites suivantes executees sur le perimetre '
+                'du poste: %s.'
+            ) % tasks_block,
+            'project_topic': (
+                'Le sujet principal du projet, tel qu il ressort des actions decrites dans le CV, porte sur les '
+                'travaux suivants: %s.'
+            ) % tasks_block,
+            'responsibilities': (
+                'Les responsabilites occupees couvrent la prise en charge des volets suivants, avec une implication '
+                'operationnelle continue: %s.'
+            ) % tasks_block,
+            'work_done': (
+                'Le travail realise est detaille par l ensemble des taches suivantes, toutes effectivement mentionnees '
+                'dans l experience: %s.'
+            ) % tasks_block,
+            'results_obtained': (
+                'Les resultats obtenus, observables a partir des taches explicitement decrites dans le CV, se '
+                'materialisent par la realisation concrete des actions suivantes: %s.'
+            ) % tasks_block,
+        }
+
+    def _enrich_experience_sections_from_tasks(self, experience):
+        if not isinstance(experience, dict):
+            return experience
+
+        normalized_tasks = self._normalize_task_sentences(experience.get('tasks'))
+        experience['tasks'] = normalized_tasks
+        if not normalized_tasks:
+            return experience
+
+        task_based_sections = self._build_task_based_narrative_sections(normalized_tasks)
+        for field_name in (
+            'general_context',
+            'project_topic',
+            'responsibilities',
+            'work_done',
+            'results_obtained',
+        ):
+            current_value = str(experience.get(field_name) or '').strip()
+            if len(current_value) < 40:
+                experience[field_name] = task_based_sections.get(field_name, current_value)
+        return experience
+
     def _normalize_ai_profile(self, payload):
         if not isinstance(payload, dict):
             payload = {}
@@ -900,7 +1035,7 @@ class HrApplicant(models.Model):
                 continue
             tasks = experience.get('tasks') if isinstance(experience.get('tasks'), list) else []
             skills_pertinents = self._normalize_experience_skills(experience.get('skills_pertinents'))
-            normalized_experiences.append({
+            normalized_experience = {
                 'title': experience.get('title') or '',
                 'company': experience.get('company') or '',
                 'duration': self._normalize_duration_text(experience.get('duration')),
@@ -911,7 +1046,8 @@ class HrApplicant(models.Model):
                 'results_obtained': str(experience.get('results_obtained') or '').strip(),
                 'tasks': [str(task).strip() for task in tasks if str(task).strip()],
                 'skills_pertinents': skills_pertinents,
-            })
+            }
+            normalized_experiences.append(self._enrich_experience_sections_from_tasks(normalized_experience))
 
         section_general_skills = {}
         section_language_skills = {}
@@ -998,6 +1134,21 @@ class HrApplicant(models.Model):
             '"experience_years": float, '\
             '"certification": [str], '\
             '"skills": {"skill_name": str_level}}. '\
+            'For each experience, field definitions are strict: '\
+            '- general_context = organizational/business context. '\
+            '- project_topic = main project/product/topic. '\
+            '- responsibilities = ownership/accountabilities. '\
+            '- work_done = concrete actions executed. '\
+            '- results_obtained = explicit outcomes/KPIs/impact. '\
+            'Use only evidence present in CV text. '\
+            'Language rule: write all extracted textual content strictly in French, including tasks and all narrative fields. '\
+            'If source text is in another language, translate faithfully into natural professional French without losing meaning. '\
+            'Do not infer results from responsibilities. '\
+            'If one of these 5 narrative fields is missing but tasks are present, build it from task sentences instead of leaving it empty. '\
+            'Each narrative field must be a long and informative sentence (or more) reusing all relevant task details for that experience. '\
+            'Only keep a narrative field empty when no evidence and no tasks exist for that experience. '\
+            'Tasks rule: extract all distinct task bullets/sentences for each experience when present; do not summarize tasks. '\
+            'Keep task items concise and deduplicated. '\
             'In "skills", prioritize languages and skills explicitly listed in the CV skills section. '\
             'For technical and soft skills, use exactly one of: Beginner, Elementary, Intermediate, Advanced, Expert. '\
             'For language skills, use exactly one of: A1, A2, B1, B2, C1, C2. '\
@@ -1016,13 +1167,20 @@ class HrApplicant(models.Model):
                 'Extract CV data from the text below. '\
                 'Set "id" to %s. '\
                 'If a value is missing, use empty string, empty list, or empty object. '\
+                'Identify experiences first, then extract details. '\
+                'Write all text outputs in French only (no English): title, company, tasks, and all narrative fields must be in French. '\
+                'If the CV uses another language, translate extracted content to French while preserving factual meaning. '\
                 'For each experience, always include: general_context, project_topic, responsibilities, work_done, results_obtained. '\
+                'Extract all distinct tasks mentioned for that same experience (bullets or action sentences), do not compress them into one summary line. '\
+                'Build the 5 narrative fields from tasks when direct text is sparse, and keep them long, detailed, and fully grounded in the extracted tasks. '\
+                'Use all relevant task sentences for that experience when composing those fields. '\
+                'Only keep a narrative field empty if there is no supporting evidence and no tasks. '\
                 'Always include skills_pertinents as a dictionary of categories for each experience. '\
                 'In top-level skills, include languages and explicit skills-section items first. '\
                 'Use string proficiency levels (not numeric). '\
                 'Chunk %s/%s of a longer CV.\n\nCV TEXT:\n%s'
             ) % (self.id, chunk_index, len(chunks), chunk)
-            ai_payload = self._call_groq_json(system_prompt, user_prompt, stage='extraction')
+            ai_payload = self._call_groq_json(system_prompt, user_prompt, max_tokens=2800, stage='extraction')
             profiles.append(self._normalize_ai_profile(ai_payload))
 
         merged = self._merge_profiles(profiles)
