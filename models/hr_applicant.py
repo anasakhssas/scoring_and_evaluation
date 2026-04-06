@@ -31,28 +31,28 @@ class HrApplicant(models.Model):
     }
     _LANGUAGE_LEVELS = ('A1', 'A2', 'B1', 'B2', 'C1', 'C2')
     _LANGUAGE_SKILL_NAMES = {
-        'arabic', 'french', 'english', 'spanish', 'german', 'italian', 'portuguese',
-        'mandarin', 'chinese', 'japanese', 'korean', 'russian', 'dutch', 'turkish',
+        'arabe', 'francais', 'anglais', 'espagnol', 'allemand', 'italien', 'portugais',
+        'mandarin', 'chinois', 'japonais', 'coreen', 'russe', 'neerlandais', 'turc',
     }
     _LANGUAGE_SKILL_ALIASES = {
-        'anglais': 'english',
-        'francais': 'french',
-        'espagnol': 'spanish',
-        'allemand': 'german',
-        'italien': 'italian',
-        'portugais': 'portuguese',
-        'arabe': 'arabic',
-        'chinois': 'chinese',
+        'english': 'anglais',
+        'french': 'francais',
+        'spanish': 'espagnol',
+        'german': 'allemand',
+        'italian': 'italien',
+        'portuguese': 'portugais',
+        'arabic': 'arabe',
+        'chinese': 'chinois',
         'mandarin chinese': 'mandarin',
-        'japonais': 'japanese',
-        'coreen': 'korean',
-        'russe': 'russian',
-        'neerlandais': 'dutch',
-        'turc': 'turkish',
-        'langue anglaise': 'english',
-        'langue francaise': 'french',
-        'french language': 'french',
-        'english language': 'english',
+        'japanese': 'japonais',
+        'korean': 'coreen',
+        'russian': 'russe',
+        'dutch': 'neerlandais',
+        'turkish': 'turc',
+        'langue anglaise': 'anglais',
+        'langue francaise': 'francais',
+        'french language': 'francais',
+        'english language': 'anglais',
     }
     _SKILL_SYNONYMS = {
         'js': 'javascript',
@@ -321,7 +321,7 @@ class HrApplicant(models.Model):
             )
         return api_key, model
 
-    def _call_groq_json(self, system_prompt, user_prompt, max_tokens=1600, stage='general'):
+    def _call_groq_json(self, system_prompt, user_prompt, max_tokens=3600, stage='general'):
         self.ensure_one()
         api_key, model = self._get_groq_configuration(stage=stage)
         request_payload = {
@@ -1145,7 +1145,14 @@ class HrApplicant(models.Model):
             'If source text is in another language, translate faithfully into natural professional French without losing meaning. '\
             'Do not infer results from responsibilities. '\
             'If one of these 5 narrative fields is missing but tasks are present, build it from task sentences instead of leaving it empty. '\
-            'Each narrative field must be a long and informative sentence (or more) reusing all relevant task details for that experience. '\
+            'Narrative richness rules: for each experience and each of the 5 narrative fields, when evidence exists, write 2 to 4 complete sentences and at least 30 words. '\
+            'Each field must be specific and non-generic, grounded in concrete facts from the same experience. '\
+            'general_context must mention business/domain context and mission scope. '\
+            'project_topic must mention project objective and functional focus. '\
+            'responsibilities must describe ownership, decisions, and accountability perimeter. '\
+            'work_done must detail concrete actions, tools/methods, and execution scope. '\
+            'results_obtained must describe factual outcomes and quantified impact when present in CV text. '\
+            'Avoid short vague fillers like "participation a" without details. '\
             'Only keep a narrative field empty when no evidence and no tasks exist for that experience. '\
             'Tasks rule: extract all distinct task bullets/sentences for each experience when present; do not summarize tasks. '\
             'Keep task items concise and deduplicated. '\
@@ -1153,7 +1160,7 @@ class HrApplicant(models.Model):
             'For technical and soft skills, use exactly one of: Beginner, Elementary, Intermediate, Advanced, Expert. '\
             'For language skills, use exactly one of: A1, A2, B1, B2, C1, C2. '\
             'Always include spoken languages inside "skills" with CEFR levels when available. '\
-            'Use canonical language names when possible: english, french, arabic, spanish, german, italian, portuguese. '\
+            'Use canonical language names when possible: francais, anglais, arabe, espagnol, allemand, italien, portugais. '\
             'Do not include markdown, comments, or explanations.'
         )
 
@@ -1174,13 +1181,16 @@ class HrApplicant(models.Model):
                 'Extract all distinct tasks mentioned for that same experience (bullets or action sentences), do not compress them into one summary line. '\
                 'Build the 5 narrative fields from tasks when direct text is sparse, and keep them long, detailed, and fully grounded in the extracted tasks. '\
                 'Use all relevant task sentences for that experience when composing those fields. '\
+                'Mandatory quality gate before final JSON: when evidence exists, each narrative field must have at least 30 words and 2 complete sentences. '\
+                'If a field is too short, expand it with missing context from tasks of the same experience before returning JSON. '\
+                'Prefer precise nouns and action verbs from the CV over generic wording. '\
                 'Only keep a narrative field empty if there is no supporting evidence and no tasks. '\
                 'Always include skills_pertinents as a dictionary of categories for each experience. '\
                 'In top-level skills, include languages and explicit skills-section items first. '\
                 'Use string proficiency levels (not numeric). '\
                 'Chunk %s/%s of a longer CV.\n\nCV TEXT:\n%s'
             ) % (self.id, chunk_index, len(chunks), chunk)
-            ai_payload = self._call_groq_json(system_prompt, user_prompt, max_tokens=2800, stage='extraction')
+            ai_payload = self._call_groq_json(system_prompt, user_prompt, max_tokens=3600, stage='extraction')
             profiles.append(self._normalize_ai_profile(ai_payload))
 
         merged = self._merge_profiles(profiles)

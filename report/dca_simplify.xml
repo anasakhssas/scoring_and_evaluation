@@ -2,6 +2,7 @@
     <template id="print_report_simplify">
         <t t-call="web.basic_layout">
             <t t-foreach="docs" t-as="o">
+                <t t-set="company" t-value="o.company_id"/>
                 <t t-set="app" t-value="o.get_applicant_extracted_payload()"/>
                 <t t-set="education" t-value="app.get('education') if isinstance(app.get('education'), dict) else {}"/>
                 <t t-set="skills" t-value="app.get('skills') if isinstance(app.get('skills'), dict) else {}"/>
@@ -20,17 +21,25 @@
                     'Technologies',
                     'Marketing'
                 ]"/>
+                <div t-attf-class="header o_company_#{company.id}_layout">
+                <div class="row mb8">
+                        <div class="col-3 mb4">
+                            <img t-if="company.logo" t-att-src="image_data_uri(company.logo)" style="max-height: 60px;" alt="Logo"/>
+                        </div>
+                    </div>
+                </div>
                 <div class="page" style="font-family: 'DejaVu Sans', Arial, sans-serif; color: #1f1f1f; font-size: 12px;">
+    
                     <br/>
                     <!-- Competences Title -->
-                    <table style="width: 90%; border-collapse: collapse; margin: 0 auto 4px auto;">
+                    <table style="width: 90%; border-collapse: collapse; margin: 0 auto 4px auto; border-color: white;">
                         <tr>
                             <td style="vertical-align: middle; white-space: nowrap; padding: 0 10px 0 0; width: 1%;">
-                                <h3 style="margin: 0; color: #0077b6; font-size: 16px; font-weight: 700; white-space: nowrap;">Compétences, technologies &amp; secteurs d'intervention</h3>
+                                <h3 style="margin: 0; color: #0088cc; font-size: 23px; font-weight: 700; white-space: nowrap;">Compétences, technologies &amp; secteurs d'intervention</h3>
                             </td>
                             <!-- <td style="vertical-align: middle; padding: 0; width: 99%;">
                                 <div style="border-top: 2px solid #ff0000; margin: 0 0 3px 0;"></div>
-                                <div style="border-top: 2px solid #0077b6; margin: 0 0 3px 0;"></div>
+                                <div style="border-top: 2px solid #0088cc; margin: 0 0 3px 0;"></div>
                                 <div style="border-top: 2px solid #ffb703; margin: 0;"></div>
                             </td> -->
                         </tr>
@@ -40,7 +49,7 @@
                         <tbody>
                             <t t-foreach="category_order" t-as="category_name">
                                 <tr>
-                                    <td style="width: 30%; background: #e9ecef; border: 1px solid #777; padding: 7px 8px; font-weight: 700; color: #333;">
+                                    <td style="width: 50%; background: #e9ecef; border: 1px solid #777; padding: 7px 8px; font-weight: 700; color: #333;">
                                         <span t-esc="category_name"/>
                                     </td>
                                     <td style="border: 1px solid #777; padding: 7px 8px;">
@@ -80,14 +89,14 @@
                     <br/>
 
                     <!-- Formation Title -->
-                    <table style="width: 90%; border-collapse: collapse; margin: 0 auto 4px auto;">
+                    <table style="width: 90%; border-collapse: collapse; margin: 0 auto 4px auto; border-color: white;">
                         <tr>
                             <td style="vertical-align: middle; white-space: nowrap; padding: 0 10px 0 0; width: 1%;">
-                                <h3 style="margin: 0; color: #0077b6; font-size: 16px; font-weight: 700; white-space: nowrap;">Formation, habilitations &amp; langues</h3>
+                                <h3 style="margin: 0; color: #0088cc; font-size: 23px; font-weight: 700; white-space: nowrap;">Formation, habilitations &amp; langues</h3>
                             </td>
                             <!-- <td style="vertical-align: middle; padding: 0; width: 99%;">
                                 <div style="border-top: 2px solid #ff0000; margin: 0 0 3px 0;"></div>
-                                <div style="border-top: 2px solid #0077b6; margin: 0 0 3px 0;"></div>
+                                <div style="border-top: 2px solid #0088cc; margin: 0 0 3px 0;"></div>
                                 <div style="border-top: 2px solid #ffb703; margin: 0;"></div>
                             </td> -->
                         </tr>
@@ -130,14 +139,14 @@
                     <br/>
 
                     <!-- Projets Title -->
-                    <table style="width: 90%; border-collapse: collapse; margin: 0 auto 4px auto; page-break-before: always;">
+                    <table style="width: 90%; border-collapse: collapse; margin: 0 auto 4px auto; page-break-before: always; border-color: white;">
                     <tr>
                         <td style="vertical-align: middle; white-space: nowrap; padding: 0 10px 0 0; width: 1%;">
-                            <h3 style="margin: 0; color: #0077b6; font-size: 16px; font-weight: 700; white-space: nowrap;">Projets, réalisations &amp; responsabilités</h3>
+                            <h3 style="margin: 0; color: #0088cc; font-size: 23px; font-weight: 700; white-space: nowrap;">Projets, réalisations &amp; responsabilités</h3>
                         </td>
                         <!-- <td style="vertical-align: middle; padding: 0; width: 99%;">
                             <div style="border-top: 2px solid #ff0000; margin: 0 0 3px 0;"></div>
-                            <div style="border-top: 2px solid #0077b6; margin: 0 0 3px 0;"></div>
+                            <div style="border-top: 2px solid #0088cc; margin: 0 0 3px 0;"></div>
                             <div style="border-top: 2px solid #ffb703; margin: 0;"></div>
                         </td> -->
                     </tr>
@@ -158,10 +167,10 @@
                                 </div>
                             </div>
 
-                                <table style="width: 90%; border-collapse: collapse; margin-bottom: 10px; margin: 40px auto 40px auto;">
+                                <table style="width: 90%; border-collapse: collapse; margin-bottom: 10px; margin: 40px auto 40px auto; border-color: white;">
                                     <tbody>
                                         <tr>
-                                        <td style="width: 25%; padding: 4px 8px; font-weight: 700; color: #333; vertical-align: top;">Contexte général :</td>
+                                        <td style="width: 28%; padding: 4px 8px; font-weight: 700; color: #333; vertical-align: top;">Contexte général :</td>
                                         <td style="padding: 4px 8px; vertical-align: top; text-align: justify;">
                                             <span t-esc="exp.get('general_context') or ''"/>
                                         </td>
@@ -198,12 +207,13 @@
                                 <table style="width: 90%; border-collapse: collapse; background: #e9ecef; margin: 40px auto 40px auto;">
                                     <tbody>
                                         <tr>
-                                            <td style="width: 25%; padding: 8px; font-weight: 700; color: #333; border-right: 1px solid #fff; vertical-align: middle;">Environnement<br/>technique</td>
+                                            <td style="width: 27%; padding: 8px; font-weight: 700; color: #333; vertical-align: middle;">Environnement<br/>technique</td>
                                             <td style="padding: 0;">
                                                 <t t-set="cats" t-value="exp.get('skills_pertinents') if isinstance(exp.get('skills_pertinents'), dict) else {}"/>
                                                 <table style="width: 100%; border-collapse: collapse; margin: 0;">
                                                     <tbody>
                                                         <t t-foreach="category_order" t-as="env_category">
+                                                        <t t-if="env_category">
                                                             <tr>
                                                                 <td style="width: 40%; padding: 2px 8px; font-size: 11px; color: #333;">
                                                                     <span t-esc="env_category"/>
@@ -224,6 +234,7 @@
                                                                     </t>
                                                                 </td>
                                                             </tr>
+                                                        </t>
                                                         </t>
                                                     </tbody>
                                                 </table>

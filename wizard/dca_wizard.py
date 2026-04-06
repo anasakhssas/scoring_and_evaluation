@@ -11,9 +11,10 @@ class DcaWizard(models.TransientModel) :
 
     _name = 'dca.wizard'
 
-    report_models = fields.Selection([('alten', 'Alten'), ('simplified', 'Simplify')], 'model de dossier',  required=True, default='simplified')
+    report_models = fields.Selection([('alten', 'Alten'), ('simplified', 'Achmitech')], 'model de dossier',  required=True, default='simplified')
     applicant_id = fields.Many2one('hr.applicant', 'candidate')
     code_job = fields.Char('Reference de poste')
+    report_type = fields.Selection([('PDF', 'pdf'), ('WORD', 'word')], 'type de dossier', required=True, default='PDF')
 
     def get_applicant_extracted_payload(self) :
         raw_payload = self.applicant_id.applicant_extracted_json or '{}'
