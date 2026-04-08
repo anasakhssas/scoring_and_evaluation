@@ -515,12 +515,16 @@ class HrApplicant(models.Model):
                     'general_context',
                     'project_topic',
                     'responsibilities',
-                    'work_done',
-                    'results_obtained',
                 ):
                     existing_experience[field_name] = self._pick_richer_text(
                         existing_experience.get(field_name),
                         experience.get(field_name),
+                    )
+
+                for field_name in ('work_done', 'results_obtained'):
+                    existing_experience[field_name] = self._merge_unique_text_list(
+                        existing_experience.get(field_name),
+                        self._normalize_narrative_list(experience.get(field_name)),
                     )
 
                 existing_experience['tasks'] = self._merge_unique_text_list(
@@ -970,6 +974,26 @@ class HrApplicant(models.Model):
             normalized_tasks.append(task_text)
         return normalized_tasks
 
+    def _normalize_narrative_list(self, values):
+        if isinstance(values, str):
+            text_value = values.strip()
+            return [text_value] if text_value else []
+        if not isinstance(values, list):
+            return []
+
+        normalized_values = []
+        seen = set()
+        for raw_value in values:
+            text_value = str(raw_value or '').strip()
+            if not text_value:
+                continue
+            fingerprint = text_value.lower()
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+            normalized_values.append(text_value)
+        return normalized_values
+
     def _build_task_based_narrative_sections(self, tasks):
         normalized_tasks = self._normalize_task_sentences(tasks)
         if not normalized_tasks:
@@ -990,13 +1014,21 @@ class HrApplicant(models.Model):
                 'operationnelle continue: %s.'
             ) % tasks_block,
             'work_done': (
-                'Le travail realise est detaille par l ensemble des taches suivantes, toutes effectivement mentionnees '
-                'dans l experience: %s.'
-            ) % tasks_block,
+                [
+                    (
+                        'Le travail realise est detaille par l ensemble des taches suivantes, toutes effectivement '
+                        'mentionnees dans l experience: %s.'
+                    ) % tasks_block
+                ]
+            ),
             'results_obtained': (
-                'Les resultats obtenus, observables a partir des taches explicitement decrites dans le CV, se '
-                'materialisent par la realisation concrete des actions suivantes: %s.'
-            ) % tasks_block,
+                [
+                    (
+                        'Les resultats obtenus, observables a partir des taches explicitement decrites dans le CV, '
+                        'se materialisent par la realisation concrete des actions suivantes: %s.'
+                    ) % tasks_block
+                ]
+            ),
         }
 
     def _enrich_experience_sections_from_tasks(self, experience):
@@ -1005,6 +1037,8 @@ class HrApplicant(models.Model):
 
         normalized_tasks = self._normalize_task_sentences(experience.get('tasks'))
         experience['tasks'] = normalized_tasks
+        experience['work_done'] = self._normalize_narrative_list(experience.get('work_done'))
+        experience['results_obtained'] = self._normalize_narrative_list(experience.get('results_obtained'))
         if not normalized_tasks:
             return experience
 
@@ -1016,6 +1050,14 @@ class HrApplicant(models.Model):
             'work_done',
             'results_obtained',
         ):
+            if field_name in ('work_done', 'results_obtained'):
+                current_values = self._normalize_narrative_list(experience.get(field_name))
+                if not current_values:
+                    experience[field_name] = self._normalize_narrative_list(task_based_sections.get(field_name))
+                else:
+                    experience[field_name] = current_values
+                continue
+
             current_value = str(experience.get(field_name) or '').strip()
             if len(current_value) < 40:
                 experience[field_name] = task_based_sections.get(field_name, current_value)
@@ -1042,8 +1084,8 @@ class HrApplicant(models.Model):
                 'general_context': str(experience.get('general_context') or '').strip(),
                 'project_topic': str(experience.get('project_topic') or '').strip(),
                 'responsibilities': str(experience.get('responsibilities') or '').strip(),
-                'work_done': str(experience.get('work_done') or '').strip(),
-                'results_obtained': str(experience.get('results_obtained') or '').strip(),
+                'work_done': self._normalize_narrative_list(experience.get('work_done')),
+                'results_obtained': self._normalize_narrative_list(experience.get('results_obtained')),
                 'tasks': [str(task).strip() for task in tasks if str(task).strip()],
                 'skills_pertinents': skills_pertinents,
             }
@@ -1128,7 +1170,7 @@ class HrApplicant(models.Model):
             'You are an expert CV parser. '\
             'Return ONLY valid JSON with this exact top-level structure: '\
             '{"id": int, "name": str, "education": {"degree": str, "field": str, "university": str}, '\
-            '"experiences": [{"title": str, "company": str, "duration": str, "general_context": str, "project_topic": str, "responsibilities": str, "work_done": str, "results_obtained": str, "tasks": [str], "skills_pertinents": {'\
+            '"experiences": [{"title": str, "company": str, "duration": str, "general_context": str, "project_topic": str, "responsibilities": str, "work_done": [str], "results_obtained": [str], "tasks": [str], "skills_pertinents": {'\
             '"Soft Skills": [str], "Logiciels": [str], "Langages de programmation": [str], "Matériels": [str], '\
             '"Méthodes": [str], "Normes et protocoles": [str], "Systèmes": [str], "Technologies": [str], "Marketing": [str]}}], '\
             '"experience_years": float, '\
@@ -1138,8 +1180,8 @@ class HrApplicant(models.Model):
             '- general_context = organizational/business context. '\
             '- project_topic = main project/product/topic. '\
             '- responsibilities = ownership/accountabilities. '\
-            '- work_done = concrete actions executed. '\
-            '- results_obtained = explicit outcomes/KPIs/impact. '\
+            '- work_done = list of concrete actions executed. '\
+            '- results_obtained = list of explicit outcomes/KPIs/impact. '\
             'Use only evidence present in CV text. '\
             'Language rule: write all extracted textual content strictly in French, including tasks and all narrative fields. '\
             'If source text is in another language, translate faithfully into natural professional French without losing meaning. '\
@@ -1178,6 +1220,7 @@ class HrApplicant(models.Model):
                 'Write all text outputs in French only (no English): title, company, tasks, and all narrative fields must be in French. '\
                 'If the CV uses another language, translate extracted content to French while preserving factual meaning. '\
                 'For each experience, always include: general_context, project_topic, responsibilities, work_done, results_obtained. '\
+                'Return work_done and results_obtained as arrays of strings (not a single string). '\
                 'Extract all distinct tasks mentioned for that same experience (bullets or action sentences), do not compress them into one summary line. '\
                 'Build the 5 narrative fields from tasks when direct text is sparse, and keep them long, detailed, and fully grounded in the extracted tasks. '\
                 'Use all relevant task sentences for that experience when composing those fields. '\

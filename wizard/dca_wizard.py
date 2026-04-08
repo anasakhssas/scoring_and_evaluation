@@ -86,7 +86,6 @@ class DcaWizard(models.TransientModel) :
         cell.text = value
 
     # détecte les lignes de points (.... ou ...) utilisées comme zones de saisie visuelle.
-
     def _is_dotted_placeholder(self, text):
         raw_text = self._to_text(text)
         if not raw_text:
@@ -119,9 +118,22 @@ class DcaWizard(models.TransientModel) :
         if not dotted_indexes:
             return False
 
-        self._set_paragraph_text(paragraphs[dotted_indexes[0]], value or '—')
-        for idx in dotted_indexes[1:]:
-            self._set_paragraph_text(paragraphs[idx], '')
+        raw_lines = [line.strip() for line in str(value or '').split('\n') if line.strip()]
+        if not raw_lines:
+            raw_lines = ['—']
+
+        for pos, paragraph_idx in enumerate(dotted_indexes):
+            if pos < len(raw_lines):
+                self._set_paragraph_text(paragraphs[paragraph_idx], raw_lines[pos])
+            else:
+                self._set_paragraph_text(paragraphs[paragraph_idx], '')
+
+        # Keep remaining content if list has more items than template lines.
+        if len(raw_lines) > len(dotted_indexes):
+            overflow = '\n'.join(raw_lines[len(dotted_indexes):])
+            last_idx = dotted_indexes[-1]
+            base_text = self._to_text(paragraphs[last_idx].text)
+            self._set_paragraph_text(paragraphs[last_idx], '%s\n%s' % (base_text, overflow))
         return True
 
     #  fallback ajouté pour écrire directement sur la ligne du label si aucun bloc pointillé n’est détecté.
@@ -141,6 +153,76 @@ class DcaWizard(models.TransientModel) :
             return
 
         self._set_paragraph_text(paragraph, '%s %s' % (current, clean_value))
+
+    def _remove_table(self, table):
+        table_element = table._element
+        parent_element = table_element.getparent()
+        if parent_element is not None:
+            parent_element.remove(table_element)
+
+    def _remove_paragraph(self, paragraph):
+        paragraph_element = paragraph._element
+        parent_element = paragraph_element.getparent()
+        if parent_element is not None:
+            parent_element.remove(paragraph_element)
+
+    def _clear_paragraph_numbering(self, paragraph):
+        paragraph_properties = paragraph._element.pPr
+        if paragraph_properties is not None and paragraph_properties.numPr is not None:
+            paragraph_properties.remove(paragraph_properties.numPr)
+
+    def _clear_paragraph_page_breaks(self, paragraph):
+        paragraph_properties = paragraph._element.pPr
+        if paragraph_properties is not None and paragraph_properties.pageBreakBefore is not None:
+            paragraph_properties.remove(paragraph_properties.pageBreakBefore)
+
+        for run in paragraph.runs:
+            run_element = run._element
+            for break_element in list(run_element.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}br')):
+                run_element.remove(break_element)
+
+    def _prune_unused_project_sections(self, document, experiences_count):
+        project_start_table_idx = 3
+        project_pair_step = 2
+
+        max_experiences = max(0, int(experiences_count or 0))
+        first_table_to_remove = project_start_table_idx + (max_experiences * project_pair_step)
+        if first_table_to_remove < len(document.tables):
+            for table in reversed(document.tables[first_table_to_remove:]):
+                self._remove_table(table)
+
+        paragraphs = document.paragraphs
+        current_experience_idx = -1
+        in_pruned_experience_block = False
+        paragraphs_to_remove = []
+
+        for idx, paragraph in enumerate(paragraphs):
+            normalized = self._normalize_label(paragraph.text)
+            if 'contexte general' in normalized:
+                current_experience_idx += 1
+                in_pruned_experience_block = current_experience_idx >= max_experiences
+
+            if not in_pruned_experience_block:
+                continue
+
+            self._set_paragraph_text(paragraph, '')
+            self._clear_paragraph_numbering(paragraph)
+            self._clear_paragraph_page_breaks(paragraph)
+            paragraphs_to_remove.append(paragraph)
+
+            # Remove dotted placeholders immediately after pruned labels.
+            if any(marker in normalized for marker in (
+                'contexte general',
+                'sujet du projet',
+                'responsabilites occupees',
+                'travail realise',
+                'resultats obtenus',
+            )):
+                self._fill_following_dotted_block(paragraphs, idx + 1, '')
+
+        # Physically remove pruned paragraphs so Word no longer reserves blank pages.
+        for paragraph in reversed(paragraphs_to_remove):
+            self._remove_paragraph(paragraph)
 
     # nettoie et déduplique les tâches
     def _normalize_task_list(self, tasks):
@@ -245,6 +327,10 @@ class DcaWizard(models.TransientModel) :
         if not isinstance(experience, dict):
             return ''
 
+        def _list_to_lines(items):
+            cleaned_items = [self._to_text(item) for item in (items or []) if self._to_text(item)]
+            return '\n'.join(cleaned_items)
+
         alias_map = {
             'general_context': (
                 'general_context', 'contexte_general', 'generalContext', 'context', 'contexte',
@@ -264,7 +350,14 @@ class DcaWizard(models.TransientModel) :
         }
 
         for key_name in alias_map.get(field_name, (field_name,)):
-            value = self._to_text(experience.get(key_name))
+            raw_value = experience.get(key_name)
+            if isinstance(raw_value, list):
+                if field_name in ('work_done', 'results_obtained'):
+                    value = _list_to_lines(raw_value)
+                else:
+                    value = '; '.join(self._to_text(item) for item in raw_value if self._to_text(item))
+            else:
+                value = self._to_text(raw_value)
             if value:
                 return value
 
@@ -280,9 +373,9 @@ class DcaWizard(models.TransientModel) :
         if field_name == 'responsibilities':
             return 'Responsabilites occupees deduites des taches realisees: %s.' % tasks_block
         if field_name == 'work_done':
-            return 'Travail realise: %s.' % tasks_block
+            return _list_to_lines(tasks)
         if field_name == 'results_obtained':
-            return 'Resultats obtenus traces via les actions realisees: %s.' % tasks_block
+            return _list_to_lines(tasks)
 
         return ''
 
@@ -355,11 +448,13 @@ class DcaWizard(models.TransientModel) :
                 elif row_label == 'langues':
                     self._set_cell_text(row.cells[1], ', '.join(language_values) if language_values else '—')
 
+        self._prune_unused_project_sections(document, len(experiences))
+
         project_start_table_idx = 3
         project_pair_step = 2
         project_slots = max(0, (len(document.tables) - project_start_table_idx) // project_pair_step)
 
-        for project_idx in range(project_slots):
+        for project_idx in range(min(project_slots, len(experiences))):
             experience = experiences[project_idx] if project_idx < len(experiences) and isinstance(experiences[project_idx], dict) else {}
 
             header_table_idx = project_start_table_idx + (project_idx * project_pair_step)
@@ -495,6 +590,9 @@ class DcaWizard(models.TransientModel) :
             'res_model': self._name,
             'res_id': self.id,
         })
+        applicant = self.env['hr.applicant'].search([('id' ,'=', self.applicant_id)])
+        if applicant:
+            applicant.message_post(attachment_ids=attachment.ids)
 
         return {
             'type': 'ir.actions.act_url',
