@@ -11,8 +11,12 @@ from odoo.exceptions import UserError
 
 try:
     from docx import Document
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
 except ImportError:
     Document = None
+    OxmlElement = None
+    qn = None
 
 _logger = logging.getLogger(__name__)
 
@@ -126,7 +130,8 @@ class DcaWizard(models.TransientModel) :
             if pos < len(raw_lines):
                 self._set_paragraph_text(paragraphs[paragraph_idx], raw_lines[pos])
             else:
-                self._set_paragraph_text(paragraphs[paragraph_idx], '')
+                # Remove unused placeholder rows to avoid rendering empty icon/bullet lines.
+                self._remove_paragraph(paragraphs[paragraph_idx])
 
         # Keep remaining content if list has more items than template lines.
         if len(raw_lines) > len(dotted_indexes):
@@ -165,6 +170,38 @@ class DcaWizard(models.TransientModel) :
         parent_element = paragraph_element.getparent()
         if parent_element is not None:
             parent_element.remove(paragraph_element)
+
+    def _table_has_immediate_page_break_before(self, table):
+        table_element = table._element
+        previous = table_element.getprevious()
+        if previous is None:
+            return False
+
+        # A page break can be represented either as paragraph property
+        # (pageBreakBefore) or as a run break of type "page".
+        if previous.tag == qn('w:p'):
+            if previous.find('.//w:pageBreakBefore', namespaces=previous.nsmap) is not None:
+                return True
+            for break_node in previous.findall('.//w:br', namespaces=previous.nsmap):
+                if break_node.get(qn('w:type')) == 'page':
+                    return True
+        return False
+
+    def _insert_page_break_before_table(self, table):
+        if OxmlElement is None or qn is None:
+            return
+
+        if self._table_has_immediate_page_break_before(table):
+            return
+
+        paragraph_break = OxmlElement('w:p')
+        run = OxmlElement('w:r')
+        break_node = OxmlElement('w:br')
+        break_node.set(qn('w:type'), 'page')
+        run.append(break_node)
+        paragraph_break.append(run)
+
+        table._element.addprevious(paragraph_break)
 
     def _clear_paragraph_numbering(self, paragraph):
         paragraph_properties = paragraph._element.pPr
@@ -462,6 +499,8 @@ class DcaWizard(models.TransientModel) :
 
             if header_table_idx < len(document.tables):
                 header_table = document.tables[header_table_idx]
+                if project_idx > 0:
+                    self._insert_page_break_before_table(header_table)
                 if header_table.rows and len(header_table.rows[0].cells) >= 2:
                     self._set_cell_text(header_table.rows[0].cells[0], self._to_text(experience.get('company')) or '—')
                     self._set_cell_text(header_table.rows[0].cells[1], self._to_text(experience.get('duration')) or '—')
