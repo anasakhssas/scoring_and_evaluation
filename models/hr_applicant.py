@@ -8,7 +8,7 @@ from datetime import date
 
 import requests
 
-from odoo import api, fields, models
+from odoo import fields, models
 from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
@@ -136,42 +136,17 @@ class HrApplicant(models.Model):
     ai_feedback = fields.Html(string='AI Feedback', readonly=True, copy=False)
     applicant_extracted_json = fields.Text(string='Applicant Extracted JSON', readonly=True, copy=False)
 
-    @api.model_create_multi
-    def create(self, vals_list):
-        applicants = super().create(vals_list)
-        applicants._auto_run_scoring_if_ready()
-        return applicants
-
-    def write(self, vals):
-        result = super().write(vals)
-        if 'job_id' in vals:
-            self._auto_run_scoring_if_ready()
-        return result
-
-    def _auto_run_scoring_if_ready(self):
-        for applicant in self:
-            if not applicant.job_id:
-                continue
-
-            attachment = applicant._select_cv_attachment()
-            if not attachment:
-                continue
-
-            try:
-                applicant.get_applicant_job_match_data()
-            except UserError as error:
-                _logger.info(
-                    'Auto scoring skipped for applicant %s: %s',
-                    applicant.id,
-                    error,
-                )
-            except Exception as error:
-                _logger.warning(
-                    'Auto scoring failed for applicant %s: %s',
-                    applicant.id,
-                    error,
-                    exc_info=True,
-                )
+    # the function button
+    def action_run_manual_scoring(self):
+        self.ensure_one()
+        self.get_applicant_job_match_data()
+        return {
+            'type': 'ir.actions.act_window',
+            'res_model': 'hr.applicant',
+            'res_id': self.id,
+            'view_mode': 'form',
+            'target': 'current',
+        }
 
     def _ai_feedback_to_html(self, feedback):
         if not isinstance(feedback, dict):
