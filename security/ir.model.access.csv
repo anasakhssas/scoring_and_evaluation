@@ -4,3 +4,4 @@ access_applicant_extraction_preview_wizard,applicant.extraction.preview.wizard,m
 access_hr_job_major_user,hr.job.major.user,model_hr_job_major,base.group_user,1,0,0,0
 access_hr_job_major_manager,hr.job.major.manager,model_hr_job_major,hr_recruitment.group_hr_recruitment_manager,1,1,1,1
 access_dossier_wizard_user,dossier.wizard.user,model_dca_wizard,base.group_user,1,1,1,1
+access_hr_applicant_score_history_user,hr.applicant.score.history.user,model_hr_applicant_score_history,base.group_user,1,0,1,0

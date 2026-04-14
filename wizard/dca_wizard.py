@@ -290,6 +290,7 @@ class DcaWizard(models.TransientModel) :
             'degree': self._to_text(education_raw.get('degree')),
             'field': self._to_text(education_raw.get('field')),
             'university': self._to_text(education_raw.get('university')),
+            'date': self._to_text(education_raw.get('date')),
         }
 
         skills_raw = payload.get('skills') if isinstance(payload.get('skills'), dict) else {}
@@ -472,6 +473,7 @@ class DcaWizard(models.TransientModel) :
                 self._to_text(education.get('field')),
                 self._to_text(education.get('university')),
             ]
+            date_education = self._to_text(education.get('date'))
             education_parts = [part for part in education_parts if part]
             language_values = category_values.get('Langues') or []
             for row in formation_table.rows:
@@ -480,6 +482,7 @@ class DcaWizard(models.TransientModel) :
                 row_label = self._normalize_label(row.cells[0].text)
                 if row_label == 'formation':
                     self._set_cell_text(row.cells[1], ' - '.join(education_parts) if education_parts else '—')
+                    self._set_cell_text(row.cells[2], date_education if date_education else '—')
                 elif row_label == 'habilitations':
                     self._set_cell_text(row.cells[1], ', '.join(certifications) if certifications else '—')
                 elif row_label == 'langues':
