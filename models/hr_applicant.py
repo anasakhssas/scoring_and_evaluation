@@ -3,62 +3,15 @@ import logging
 import math
 import os
 import re
-import unicodedata
 from html import escape
-from datetime import date
-
 import requests
-
 from odoo import fields, models
 from odoo.exceptions import UserError
-
 _logger = logging.getLogger(__name__)
-
 
 class HrApplicant(models.Model):
     _inherit = 'hr.applicant'
     _GROQ_CHAT_COMPLETIONS_URL = 'https://api.groq.com/openai/v1/chat/completions'
-    _CV_MIN_EXTRACTABLE_LENGTH = 200
-    _CV_EXTRACTION_CHUNK_SIZE = 16000
-    _CV_EXTRACTION_CHUNK_OVERLAP = 1000
-    _CV_EXTRACTION_MAX_CHUNKS = 3
-    _CV_EXTRACTION_MIN_RESPONSE_TOKENS = 2600
-    _CV_EXTRACTION_MAX_RESPONSE_TOKENS = 5200
-    _CV_EXTRACTION_MAX_HINT_SKILLS = 25
-    _GOOD_SKILL_MIN_SCORE5 = 4
-    _GENERAL_SKILL_LEVELS = ('Beginner', 'Elementary', 'Intermediate', 'Advanced', 'Expert')
-    _GENERAL_LEVEL_BY_SCORE5 = {
-        1: 'Beginner',
-        2: 'Elementary',
-        3: 'Intermediate',
-        4: 'Advanced',
-        5: 'Expert',
-    }
-    _LANGUAGE_LEVELS = ('A1', 'A2', 'B1', 'B2', 'C1', 'C2')
-    _LANGUAGE_SKILL_NAMES = {
-        'arabe', 'francais', 'anglais', 'espagnol', 'allemand', 'italien', 'portugais',
-        'mandarin', 'chinois', 'japonais', 'coreen', 'russe', 'neerlandais', 'turc',
-    }
-    _LANGUAGE_SKILL_ALIASES = {
-        'english': 'anglais',
-        'french': 'francais',
-        'spanish': 'espagnol',
-        'german': 'allemand',
-        'italian': 'italien',
-        'portuguese': 'portugais',
-        'arabic': 'arabe',
-        'chinese': 'chinois',
-        'mandarin chinese': 'mandarin',
-        'japanese': 'japonais',
-        'korean': 'coreen',
-        'russian': 'russe',
-        'dutch': 'neerlandais',
-        'turkish': 'turc',
-        'langue anglaise': 'anglais',
-        'langue francaise': 'francais',
-        'french language': 'francais',
-        'english language': 'anglais',
-    }
     _SKILL_SYNONYMS = {
         'js': 'javascript',
         'node': 'node.js',
@@ -74,67 +27,6 @@ class HrApplicant(models.Model):
         'c sharp': 'c#',
         'csharp': 'c#',
         'dotnet': '.net',
-    }
-    _MONTH_NAME_TO_NUMBER = {
-        'jan': 1, 'january': 1,
-        'janv': 1, 'janvier': 1,
-        'feb': 2, 'february': 2,
-        'fev': 2, 'fevr': 2, 'fevrier': 2,
-        'mar': 3, 'march': 3,
-        'mars': 3,
-        'apr': 4, 'april': 4,
-        'avr': 4, 'avril': 4,
-        'may': 5,
-        'mai': 5,
-        'jun': 6, 'june': 6,
-        'juin': 6,
-        'jul': 7, 'july': 7,
-        'juil': 7, 'juillet': 7,
-        'aug': 8, 'august': 8,
-        'aout': 8,
-        'sep': 9, 'sept': 9, 'september': 9,
-        'septembre': 9,
-        'oct': 10, 'october': 10,
-        'octobre': 10,
-        'nov': 11, 'november': 11,
-        'novembre': 11,
-        'dec': 12, 'december': 12,
-        'decembre': 12,
-    }
-    _SKILL_PERTINENT_CATEGORIES = (
-        'Soft Skills',
-        'Logiciels',
-        'Langages de programmation',
-        'Matériels',
-        'Méthodes',
-        'Normes et protocoles',
-        'Systèmes',
-        'Technologies',
-        'Marketing',
-    )
-    _SKILL_CATEGORY_ALIASES = {
-        'soft skills': 'Soft Skills',
-        'softskills': 'Soft Skills',
-        'logiciels': 'Logiciels',
-        'software': 'Logiciels',
-        'langages de programmation': 'Langages de programmation',
-        'langages programmation': 'Langages de programmation',
-        'programming languages': 'Langages de programmation',
-        'langages': 'Langages de programmation',
-        'materiels': 'Matériels',
-        'materiel': 'Matériels',
-        'hardware': 'Matériels',
-        'methodes': 'Méthodes',
-        'methodologies': 'Méthodes',
-        'methodology': 'Méthodes',
-        'normes et protocoles': 'Normes et protocoles',
-        'normes protocoles': 'Normes et protocoles',
-        'standards and protocols': 'Normes et protocoles',
-        'systemes': 'Systèmes',
-        'systeme': 'Systèmes',
-        'systems': 'Systèmes',
-        'technologies': 'Technologies',
-        'marketing': 'Marketing',
     }
 
     score_total = fields.Integer(string='Score Total', readonly=True, copy=False)
@@ -180,7 +72,6 @@ class HrApplicant(models.Model):
             '<p><b>Points forts</b></p>%s' % _list_html(feedback.get('strengths')),
             '<p><b>Risques</b></p>%s' % _list_html(feedback.get('risks')),
             '<p><b>Ambiguites a verifier</b></p>%s' % _list_html(feedback.get('ambiguities_to_verify')),
-            '<p><b>Questions RH</b></p>%s' % _list_html(feedback.get('interview_questions')),
         ]
         return ''.join(sections)
 
@@ -240,7 +131,7 @@ class HrApplicant(models.Model):
         return keyword_match[:1] or pdf_attachments[:1]
 
     def _get_cv_text(self, attachment):
-        return (attachment.index_content or '').strip()
+        return attachment.index_content or ''
 
     def _is_likely_image_only_pdf(self, attachment):
         if not attachment or not self._is_pdf_attachment(attachment):
@@ -249,6 +140,9 @@ class HrApplicant(models.Model):
 
     def _verify_cv_is_text_based(self, attachment):
         cv_text = self._get_cv_text(attachment)
+        params = self.env['ir.config_parameter'].sudo()
+        min_length_value = (params.get_param('scoring_candidates.cv_min_extractable_length') or '').strip()
+        min_extractable_length = int(min_length_value) if min_length_value else 200
         if not cv_text:
             if self._is_likely_image_only_pdf(attachment):
                 raise UserError(
@@ -260,11 +154,11 @@ class HrApplicant(models.Model):
                 'Use a searchable PDF or enable attachment indexing in Odoo.'
             )
 
-        if len(cv_text) < int(self._CV_MIN_EXTRACTABLE_LENGTH):
+        if len(cv_text) < int(min_extractable_length):
             raise UserError(
                 'CV text is too short to extract meaningful data (%d characters found, minimum is %d). '
                 'The PDF may be corrupted, contain only a header, or indexing may be incomplete.'
-                % (len(cv_text), int(self._CV_MIN_EXTRACTABLE_LENGTH))
+                % (len(cv_text), int(min_extractable_length))
             )
 
         return cv_text
@@ -297,11 +191,7 @@ class HrApplicant(models.Model):
                 break
 
         if not model:
-            model = (
-                (params.get_param('scoring_candidates.groq_model') or '').strip()
-                or (params.get_param('groq_model') or '').strip()
-                or 'openai/gpt-oss-120b'
-            )
+            model = params.get_param('scoring_candidates.groq_model')
 
         if not api_key:
             raise UserError(
@@ -400,1110 +290,194 @@ class HrApplicant(models.Model):
             except json.JSONDecodeError as error:
                 raise UserError('Unable to parse Groq JSON response: %s' % error) from error
 
-    def _normalize_duration_text(self, duration_text):
-        normalized = str(duration_text or '').strip()
-        if not normalized:
-            return ''
-
-        normalized = normalized.replace('—', '-').replace('–', '-')
-        normalized = re.sub(r'\s*-\s*', ' - ', normalized)
-        normalized = re.sub(r'\s+', ' ', normalized).strip()
-        return normalized
-
-    def _is_cv_section_heading(self, line_text):
-        line = str(line_text or '').strip()
-        if not line or len(line) > 100:
-            return False
-
-        normalized = ''.join(
-            character
-            for character in unicodedata.normalize('NFD', line.lower())
-            if unicodedata.category(character) != 'Mn'
-        )
-        normalized = re.sub(r'[^a-z0-9\s]', ' ', normalized)
-        normalized = re.sub(r'\s+', ' ', normalized).strip()
-        if not normalized:
-            return False
-
-        section_markers = {
-            'profil', 'profil professionnel', 'profile', 'summary', 'executive summary',
-            'resume', 'synthese', 'synthese professionnelle', 'a propos', 'about me',
-            'objectif', 'objectifs', 'objective',
-            'experience', 'experiences', 'professional experience', 'work experience',
-            'experience professionnelle', 'experiences professionnelles',
-            'parcours professionnel', 'parcours', 'carriere', 'career',
-            'historique professionnel', 'postes occupes', 'emplois',
-            'activites professionnelles', 'activite professionnelle',
-            'missions', 'mission', 'realisation', 'realisations',
-            'formation', 'formations', 'education', 'etudes', 'scolarite',
-            'diplomes', 'diplome', 'cursus', 'parcours academique',
-            'academic background', 'background academique',
-            'competences', 'competences techniques', 'competences cles',
-            'skills', 'technical skills', 'core competencies', 'key skills',
-            'savoir faire', 'savoir-faire', 'expertises', 'expertise',
-            'competences informatiques', 'outils', 'technologies',
-            'langues', 'languages', 'langue', 'language skills', 'competences linguistiques',
-            'certification', 'certifications', 'certificats', 'certificat',
-            'licences', 'licence', 'accreditations',
-            'projets', 'projects', 'projet', 'project', 'realisations projets',
-            'projets realises', 'projets significatifs',
-            'publications', 'publication', 'contributions', 'open source',
-            'references', 'reference', 'recommandations',
-            'centres d interet', 'loisirs', 'interests', 'hobbies',
-            'activites extra professionnelles', 'activites associatives',
-            'bénévolat', 'benevolat', 'volunteer',
-        }
-
-        if normalized in section_markers:
-            return True
-
-        for marker in section_markers:
-            if normalized.startswith(marker + ' ') or normalized.startswith(marker + ':'):
-                return True
-
-        stripped_original = line.strip().rstrip(':').strip()
-        if (
-            stripped_original == stripped_original.upper()
-            and len(stripped_original) >= 4
-            and len(stripped_original) <= 60
-            and not any(char.isdigit() for char in stripped_original)
-        ):
-            return True
-
-        return False
-
-    def _split_cv_into_sections(self, cv_text):
-        lines = str(cv_text or '').splitlines()
-        if not lines:
-            return []
-
-        sections = []
-        current_lines = []
-        for line in lines:
-            if self._is_cv_section_heading(line) and current_lines:
-                section_text = '\n'.join(current_lines).strip()
-                if section_text:
-                    sections.append(section_text)
-                current_lines = [line]
-                continue
-
-            current_lines.append(line)
-
-        if current_lines:
-            section_text = '\n'.join(current_lines).strip()
-            if section_text:
-                sections.append(section_text)
-
-        return sections
-
-    def _split_cv_text_chunks(self, cv_text):
-        normalized = str(cv_text or '').strip()
-        if not normalized:
-            return []
-
-        chunk_size = int(self._CV_EXTRACTION_CHUNK_SIZE)
-        overlap = int(self._CV_EXTRACTION_CHUNK_OVERLAP)
-        base_max_chunks = int(self._CV_EXTRACTION_MAX_CHUNKS)
-        if chunk_size <= 0:
-            return [normalized]
-
-        overlap = max(0, min(overlap, max(0, chunk_size - 1)))
-        step = max(1, chunk_size - overlap)
-        estimated_chunks = max(1, int(math.ceil(float(len(normalized)) / float(step))))
-        max_chunks = max(base_max_chunks, min(12, estimated_chunks))
-
-        sections = self._split_cv_into_sections(normalized) or [normalized]
-
-        chunks = []
-        current_chunk = ''
-        for section in sections:
-            section_text = str(section or '').strip()
-            if not section_text:
-                continue
-
-            candidate_chunk = section_text if not current_chunk else '%s\n\n%s' % (current_chunk, section_text)
-            if len(candidate_chunk) <= chunk_size:
-                current_chunk = candidate_chunk
-                continue
-
-            if current_chunk:
-                chunks.append(current_chunk)
-                if len(chunks) >= max_chunks:
-                    break
-                current_chunk = ''
-
-            if len(section_text) <= chunk_size:
-                current_chunk = section_text
-                continue
-
-            start = 0
-            while start < len(section_text) and len(chunks) < max_chunks:
-                hard_end = min(start + chunk_size, len(section_text))
-                end = hard_end
-                if hard_end < len(section_text):
-                    min_boundary = start + int(chunk_size * 0.55)
-                    newline_end = section_text.rfind('\n', min_boundary, hard_end)
-                    sentence_end = section_text.rfind('. ', min_boundary, hard_end)
-                    if newline_end > start:
-                        end = newline_end + 1
-                    elif sentence_end > start:
-                        end = sentence_end + 1
-
-                piece = section_text[start:end].strip()
-                if piece:
-                    chunks.append(piece)
-                if end >= len(section_text):
-                    break
-                start = max(start + 1, end - overlap)
-
-        if current_chunk and len(chunks) < max_chunks:
-            chunks.append(current_chunk)
-
-        if not chunks:
-            return [normalized]
-
-        return chunks[:max_chunks]
-
-    def _normalize_cv_text_for_extraction(self, cv_text):
-        normalized = str(cv_text or '')
-        if not normalized:
-            return ''
-
-        normalized = normalized.replace('\r\n', '\n').replace('\r', '\n')
-        normalized = normalized.replace('•', '- ').replace('◦', '- ').replace('▪', '- ')
-        normalized = re.sub(r'([A-Za-z])-\n([A-Za-z])', r'\1\2', normalized)
-
-        cleaned_lines = []
-        for line in normalized.split('\n'):
-            compact = re.sub(r'\s+', ' ', line).strip()
-            if re.match(r'^(page\s+\d+\s*/\s*\d+|page\s+\d+)$', compact.lower()):
-                continue
-            cleaned_lines.append(compact)
-
-        normalized = '\n'.join(cleaned_lines)
-        normalized = re.sub(r'\n{3,}', '\n\n', normalized)
-        return normalized.strip()
-
-    def _extract_name_hint_from_cv(self, cv_text):
-        if not cv_text:
-            return ''
-
-        lines = [re.sub(r'\s+', ' ', line).strip() for line in str(cv_text).splitlines() if str(line).strip()]
-        candidate_lines = lines[:12]
-        for line in candidate_lines:
-            if len(line) < 4 or len(line) > 70:
-                continue
-            if any(token in line.lower() for token in ('@', 'http', 'www', 'linkedin', 'github', 'tel', 'phone')):
-                continue
-            if any(char.isdigit() for char in line):
-                continue
-            words = [word for word in re.split(r'\s+', line) if word]
-            if len(words) < 2 or len(words) > 4:
-                continue
-            if self._is_cv_section_heading(line):
-                continue
-            title_like = all(word[:1].isupper() for word in words if word[:1].isalpha())
-            if title_like:
-                return line
-        return ''
-
-    def _extract_skill_hints_from_cv(self, cv_text):
-        raw_text = str(cv_text or '').lower()
-        if not raw_text:
-            return []
-
-        normalized_text = re.sub(r'[^a-z0-9\s\+#\./-]', ' ', raw_text)
-        normalized_text = re.sub(r'\s+', ' ', normalized_text)
-
-        candidate_terms = set(self._SKILL_SYNONYMS.keys())
-        candidate_terms.update(self._SKILL_SYNONYMS.values())
-        candidate_terms.update(self._LANGUAGE_SKILL_NAMES)
-        candidate_terms.update(self._LANGUAGE_SKILL_ALIASES.keys())
-
-        found = set()
-        for term in candidate_terms:
-            normalized_term = self._normalize_skill_key(term)
-            if not normalized_term:
-                continue
-            if re.search(r'[^a-z0-9\s]', normalized_term):
-                if normalized_term in normalized_text:
-                    found.add(self._canonical_skill_name(normalized_term) or normalized_term)
-                continue
-            pattern = r'\b%s\b' % re.escape(normalized_term)
-            if re.search(pattern, normalized_text):
-                found.add(self._canonical_skill_name(normalized_term) or normalized_term)
-
-        ordered = sorted(skill for skill in found if skill)
-        return ordered[:int(self._CV_EXTRACTION_MAX_HINT_SKILLS)]
-
-    def _build_cv_extraction_hints(self, cv_text):
+    def _default_extracted_profile(self):
         return {
-            'name_hint': self._extract_name_hint_from_cv(cv_text),
-            'skill_candidates': self._extract_skill_hints_from_cv(cv_text),
-        }
-
-    def _compute_extraction_max_tokens(self, chunk_text):
-        chunk_length = len(str(chunk_text or ''))
-        dynamic_budget = int(self._CV_EXTRACTION_MIN_RESPONSE_TOKENS) + int(chunk_length / 12)
-        return max(
-            int(self._CV_EXTRACTION_MIN_RESPONSE_TOKENS),
-            min(int(self._CV_EXTRACTION_MAX_RESPONSE_TOKENS), dynamic_budget),
-        )
-
-    def _merge_unique_text_list(self, base_values, incoming_values):
-        merged_values = []
-        seen = set()
-        for source_values in (base_values or [], incoming_values or []):
-            for raw_value in source_values:
-                text = str(raw_value).strip()
-                if not text:
-                    continue
-                fingerprint = text.lower()
-                if fingerprint in seen:
-                    continue
-                seen.add(fingerprint)
-                merged_values.append(text)
-        return merged_values
-
-    def _pick_richer_text(self, current_value, new_value):
-        current_text = str(current_value or '').strip()
-        new_text = str(new_value or '').strip()
-        if not current_text:
-            return new_text
-        if not new_text:
-            return current_text
-        return new_text if len(new_text) > len(current_text) else current_text
-
-    def _merge_experience_skill_categories(self, base_skills, incoming_skills):
-        merged_skills = self._normalize_experience_skills(base_skills)
-        incoming_normalized = self._normalize_experience_skills(incoming_skills)
-        for category_name in self._SKILL_PERTINENT_CATEGORIES:
-            merged_skills[category_name] = self._merge_unique_text_list(
-                merged_skills.get(category_name),
-                incoming_normalized.get(category_name),
-            )
-        return merged_skills
-
-    def _experience_fuzzy_key(self, experience):
-        """Returns a normalized string key for fuzzy deduplication."""
-        import unicodedata as _ud
-
-        def _clean(value):
-            text = str(value or '').lower().strip()
-            text = ''.join(
-                character for character in _ud.normalize('NFD', text)
-                if _ud.category(character) != 'Mn'
-            )
-            text = re.sub(r'[^a-z0-9\s]', ' ', text)
-            text = re.sub(r'\s+', ' ', text).strip()
-            return text
-
-        title_key = _clean(experience.get('title'))[:40]
-        company_key = _clean(experience.get('company'))[:30]
-        return (title_key, company_key)
-
-    def _find_fuzzy_matching_experience(self, candidate_experience, experience_by_fingerprint):
-        """
-        Returns the matching existing experience dict if a close-enough match exists,
-        otherwise returns None.
-        Uses token overlap on (title, company) to handle LLM paraphrasing across chunks.
-        """
-        from difflib import SequenceMatcher
-
-        candidate_title, candidate_company = self._experience_fuzzy_key(candidate_experience)
-
-        for (existing_title, existing_company), existing_experience in experience_by_fingerprint.items():
-            title_ratio = SequenceMatcher(None, candidate_title, existing_title).ratio()
-            company_ratio = SequenceMatcher(None, candidate_company, existing_company).ratio()
-
-            if title_ratio >= 0.82 and company_ratio >= 0.70:
-                return existing_experience
-            if title_ratio >= 0.95 and not existing_company and not candidate_company:
-                return existing_experience
-
-        return None
-
-    def _merge_profiles(self, profiles):
-        cleaned_profiles = [profile for profile in (profiles or []) if isinstance(profile, dict)]
-        if not cleaned_profiles:
-            return {
-                'id': self.id,
-                'name': self.partner_name or '',
-                'education': {'degree': '', 'field': '', 'university': '', 'date': ''},
-                'experiences': [],
-                'experience_years': 0.0,
-                'certification': [],
-                'skills': {},
-                'extraction_warnings': ['No profile data was extracted from the CV text.'],
-            }
-
-        merged = {
             'id': self.id,
-            'name': '',
+            'name': self.partner_name or '',
             'education': {'degree': '', 'field': '', 'university': '', 'date': ''},
             'experiences': [],
             'experience_years': 0.0,
             'certification': [],
             'skills': {},
+            'extraction_warnings': [],
+            'chunk_count': 1,
         }
 
-        experience_by_fingerprint = {}
-        certification_seen = set()
-        skill_scores = {}
-        language_skill_ranks = {}
-
-        for profile in cleaned_profiles:
-            if not merged['name']:
-                merged['name'] = str(profile.get('name') or '').strip()
-
-            education = profile.get('education') if isinstance(profile.get('education'), dict) else {}
-            for field_name in ('degree', 'field', 'university', 'date'):
-                if not merged['education'][field_name]:
-                    merged['education'][field_name] = str(education.get(field_name) or '').strip()
-
-            for experience in (profile.get('experiences') or []):
-                if not isinstance(experience, dict):
-                    continue
-                fuzzy_key = self._experience_fuzzy_key(experience)
-                if not any(fuzzy_key):
-                    continue
-
-                existing_experience = self._find_fuzzy_matching_experience(experience, experience_by_fingerprint)
-
-                if existing_experience is None:
-                    normalized_experience = dict(experience)
-                    normalized_experience['tasks'] = self._merge_unique_text_list(
-                        normalized_experience.get('tasks'),
-                        [],
-                    )
-                    normalized_experience['skills_pertinents'] = self._normalize_experience_skills(
-                        normalized_experience.get('skills_pertinents')
-                    )
-                    normalized_experience = self._enrich_experience_sections_from_tasks(normalized_experience)
-                    merged['experiences'].append(normalized_experience)
-                    experience_by_fingerprint[fuzzy_key] = normalized_experience
-                    continue
-
-                for field_name in (
-                    'general_context',
-                    'project_topic',
-                    'responsibilities',
-                ):
-                    existing_experience[field_name] = self._pick_richer_text(
-                        existing_experience.get(field_name),
-                        experience.get(field_name),
-                    )
-
-                for field_name in ('work_done', 'results_obtained'):
-                    existing_experience[field_name] = self._merge_unique_text_list(
-                        existing_experience.get(field_name),
-                        self._normalize_narrative_list(experience.get(field_name)),
-                    )
-
-                existing_experience['tasks'] = self._merge_unique_text_list(
-                    existing_experience.get('tasks'),
-                    experience.get('tasks') if isinstance(experience.get('tasks'), list) else [],
-                )
-                existing_experience['skills_pertinents'] = self._merge_experience_skill_categories(
-                    existing_experience.get('skills_pertinents'),
-                    experience.get('skills_pertinents'),
-                )
-                existing_experience['duration'] = self._pick_richer_text(
-                    existing_experience.get('duration'),
-                    experience.get('duration'),
-                )
-                self._enrich_experience_sections_from_tasks(existing_experience)
-
-            for certification in (profile.get('certification') or []):
-                normalized_certification = str(certification or '').strip()
-                if not normalized_certification:
-                    continue
-                fingerprint = normalized_certification.lower()
-                if fingerprint in certification_seen:
-                    continue
-                certification_seen.add(fingerprint)
-                merged['certification'].append(normalized_certification)
-
-            for skill_name, raw_level in (profile.get('skills') or {}).items():
-                canonical_skill = self._canonical_skill_name(skill_name)
-                if not canonical_skill:
-                    continue
-
-                if self._is_language_skill(canonical_skill):
-                    normalized_level = self._normalize_language_skill_level(raw_level)
-                    if not normalized_level:
-                        continue
-                    level_rank = self._LANGUAGE_LEVELS.index(normalized_level) + 1
-                    language_skill_ranks[canonical_skill] = max(
-                        language_skill_ranks.get(canonical_skill, 0),
-                        level_rank,
-                    )
-                    continue
-
-                score = self._skill_level_to_score5(raw_level)
-                if score <= 0:
-                    continue
-                skill_scores[canonical_skill] = max(skill_scores.get(canonical_skill, 0), score)
-
-        merged_skills = {
-            skill_name: self._GENERAL_LEVEL_BY_SCORE5.get(level, 'Beginner')
-            for skill_name, level in skill_scores.items()
-        }
-        for skill_name, level_rank in language_skill_ranks.items():
-            rank = max(1, min(len(self._LANGUAGE_LEVELS), int(level_rank)))
-            merged_skills[skill_name] = self._LANGUAGE_LEVELS[rank - 1]
-
-        merged['skills'] = merged_skills
-        merged['experience_years'] = self._calculate_experience_years(merged['experiences'])
-        merged['extraction_warnings'] = self._build_extraction_warnings(merged)
-        return merged
-
-    def _build_extraction_warnings(self, applicant_profile):
-        warnings = []
-        profile = applicant_profile if isinstance(applicant_profile, dict) else {}
-
-        if not str(profile.get('name') or '').strip():
-            warnings.append('Candidate name could not be extracted reliably.')
-
-        education = profile.get('education') if isinstance(profile.get('education'), dict) else {}
-        if not any(str(education.get(field_name) or '').strip() for field_name in ('degree', 'field', 'university', 'date')):
-            warnings.append('Education details are incomplete or missing.')
-
-        experiences = profile.get('experiences') if isinstance(profile.get('experiences'), list) else []
-        if not experiences:
-            warnings.append('No experience entries were extracted from the CV.')
-
-        skills = profile.get('skills') if isinstance(profile.get('skills'), dict) else {}
-        if not skills:
-            warnings.append('No skills were extracted from the CV.')
-
-        return warnings
-
-    def _month_from_name(self, month_name):
-        normalized = str(month_name or '').strip().lower().replace('.', '')
-        normalized = ''.join(
-            character
-            for character in unicodedata.normalize('NFD', normalized)
-            if unicodedata.category(character) != 'Mn'
-        )
-        return self._MONTH_NAME_TO_NUMBER.get(normalized, 0)
-
-    def _duration_to_months_estimate(self, duration_text):
-        normalized = self._normalize_duration_text(duration_text).lower()
-        if not normalized:
-            return 0
-
-        years_match = re.search(r'(\d+)\s*(?:ans?|years?)\b', normalized)
-        months_match = re.search(r'(\d+)\s*(?:mois|months?)\b', normalized)
-
-        total_months = 0
-        if years_match:
-            total_months += int(years_match.group(1)) * 12
-        if months_match:
-            total_months += int(months_match.group(1))
-        return total_months
-
-    def _duration_to_year_interval(self, duration_text):
-        normalized = self._normalize_duration_text(duration_text)
-        if not normalized:
-            return None
-
-        lowered = normalized.lower()
-        has_present = bool(re.search(r'\b(present|current|now|ongoing|actuel|actuelle|a ce jour|en cours)\b', lowered))
-
-        # Pattern: MM/YYYY or MM-YYYY
-        numeric_month_year_matches = list(
-            re.finditer(r'\b(0?[1-9]|1[0-2])[\-/]((?:19|20)\d{2})\b', lowered)
-        )
-        numeric_month_year_points = [
-            (int(match.group(2)), int(match.group(1)))
-            for match in numeric_month_year_matches
-        ]
-
-        if numeric_month_year_points:
-            start_year, start_month = numeric_month_year_points[0]
-            if has_present:
-                today = date.today()
-                end_year, end_month = today.year, today.month
-            else:
-                end_year, end_month = numeric_month_year_points[-1]
-
-            if (end_year, end_month) < (start_year, start_month):
-                start_year, start_month, end_year, end_month = end_year, end_month, start_year, start_month
-            return (start_year, start_month, end_year, end_month)
-
-        # Pattern: YYYY-MM or YYYY/MM
-        year_month_matches = list(
-            re.finditer(r'\b((?:19|20)\d{2})[\-/](0?[1-9]|1[0-2])\b', lowered)
-        )
-        year_month_points = [
-            (int(match.group(1)), int(match.group(2)))
-            for match in year_month_matches
-        ]
-
-        if year_month_points:
-            start_year, start_month = year_month_points[0]
-            if has_present:
-                today = date.today()
-                end_year, end_month = today.year, today.month
-            else:
-                end_year, end_month = year_month_points[-1]
-
-            if (end_year, end_month) < (start_year, start_month):
-                start_year, start_month, end_year, end_month = end_year, end_month, start_year, start_month
-            return (start_year, start_month, end_year, end_month)
-
-        month_year_matches = list(
-            re.finditer(
-                r'\b('
-                r'jan(?:uary)?|janv(?:ier)?|'
-                r'feb(?:ruary)?|fev(?:r(?:ier)?)?|'
-                r'mar(?:ch)?|mars|'
-                r'apr(?:il)?|avr(?:il)?|'
-                r'may|mai|'
-                r'jun(?:e)?|juin|'
-                r'jul(?:y)?|juil(?:let)?|'
-                r'aug(?:ust)?|aout|'
-                r'sep(?:t|tember)?|septembre|'
-                r'oct(?:ober)?|octobre|'
-                r'nov(?:ember)?|novembre|'
-                r'dec(?:ember)?|decembre'
-                r')\s+((?:19|20)\d{2})\b',
-                lowered,
-            )
-        )
-
-        month_year_points = []
-        for match in month_year_matches:
-            month = self._month_from_name(match.group(1))
-            year = int(match.group(2))
-            if month and year:
-                month_year_points.append((year, month))
-
-        if month_year_points:
-            start_year, start_month = month_year_points[0]
-            if has_present:
-                today = date.today()
-                end_year, end_month = today.year, today.month
-            else:
-                end_year, end_month = month_year_points[-1]
-
-            if (end_year, end_month) < (start_year, start_month):
-                start_year, start_month, end_year, end_month = end_year, end_month, start_year, start_month
-            return (start_year, start_month, end_year, end_month)
-
-        year_values = [int(year) for year in re.findall(r'\b(?:19|20)\d{2}\b', normalized)]
-        if not year_values:
-            return None
-
-        start_year = year_values[0]
-        end_year = year_values[-1]
-        start_month = 1
-        end_month = 12
-
-        if has_present:
-            today = date.today()
-            end_year = today.year
-            end_month = today.month
-
-        if (end_year, end_month) < (start_year, start_month):
-            start_year, start_month, end_year, end_month = end_year, end_month, start_year, start_month
-
-        return (start_year, start_month, end_year, end_month)
-
-    def _calculate_experience_years(self, experiences):
-        intervals = []
-        fallback_months = 0
-        for experience in experiences:
-            if not isinstance(experience, dict):
-                continue
-            interval = self._duration_to_year_interval(experience.get('duration'))
-            if interval:
-                intervals.append(interval)
-                continue
-            fallback_months += self._duration_to_months_estimate(experience.get('duration'))
-
-        if not intervals:
-            return round(float(fallback_months) / 12.0, 1)
-
-        intervals.sort(key=lambda interval: (interval[0], interval[1]))
-        merged_intervals = [list(intervals[0])]
-        for start_year, start_month, end_year, end_month in intervals[1:]:
-            last_start_year, last_start_month, last_end_year, last_end_month = merged_intervals[-1]
-            last_end_index = (last_end_year * 12) + last_end_month
-            current_start_index = (start_year * 12) + start_month
-            current_end_index = (end_year * 12) + end_month
-            if current_start_index <= (last_end_index + 1):
-                if current_end_index > last_end_index:
-                    merged_intervals[-1][2] = end_year
-                    merged_intervals[-1][3] = end_month
-            else:
-                merged_intervals.append([start_year, start_month, end_year, end_month])
-
-        total_months = 0
-        for start_year, start_month, end_year, end_month in merged_intervals:
-            start_index = (start_year * 12) + start_month
-            end_index = (end_year * 12) + end_month
-            months_span = max(1, end_index - start_index + 1)
-            total_months += months_span
-
-        if fallback_months > 0:
-            safe_fallback = min(fallback_months, max(1, int(total_months * 0.20)))
-            total_months += safe_fallback
-
-        return round(float(total_months) / 12.0, 1)
-
-    def _is_language_skill(self, skill_name):
-        return self._canonical_skill_name(skill_name) in self._LANGUAGE_SKILL_NAMES
-
-    def _normalize_general_skill_level(self, raw_level):
-        if raw_level is None:
-            return ''
-
-        level_text = str(raw_level).strip()
-        if not level_text:
-            return ''
-
-        for label in self._GENERAL_SKILL_LEVELS:
-            if level_text.lower() == label.lower():
-                return label
-
-        slash_match = re.match(r'^(\d+)\s*/\s*5$', level_text)
-        if slash_match:
-            numeric_level = int(slash_match.group(1))
-            numeric_level = max(1, min(5, numeric_level))
-            return self._GENERAL_SKILL_LEVELS[numeric_level - 1]
-
-        try:
-            numeric_level = int(float(level_text))
-            numeric_level = max(1, min(5, numeric_level))
-            return self._GENERAL_SKILL_LEVELS[numeric_level - 1]
-        except (TypeError, ValueError):
-            return ''
-
-    def _normalize_language_skill_level(self, raw_level):
-        if raw_level is None:
-            return ''
-
-        level_text = str(raw_level).strip().upper()
-        if not level_text:
-            return ''
-
-        textual_map = {
-            'NATIVE': 'C2',
-            'MOTHER TONGUE': 'C2',
-            'BILINGUAL': 'C2',
-            'FLUENT': 'C1',
-            'ADVANCED': 'C1',
-            'PROFESSIONAL': 'B2',
-            'INTERMEDIATE': 'B1',
-            'ELEMENTARY': 'A2',
-            'BEGINNER': 'A1',
-            'MATERNELLE': 'C2',
-            'BILINGUE': 'C2',
-            'COURANT': 'C1',
-            'PROFESSIONNEL': 'B2',
-            'DEBUTANT': 'A1',
-        }
-        mapped = textual_map.get(level_text)
-        if mapped:
-            return mapped
-
-        compact = re.sub(r'\s+', '', level_text)
-        if compact in self._LANGUAGE_LEVELS:
-            return compact
-
-        if level_text in self._LANGUAGE_LEVELS:
-            return level_text
-
-        slash_match = re.match(r'^(\d+)\s*/\s*6$', level_text)
-        if slash_match:
-            numeric_level = int(slash_match.group(1))
-            numeric_level = max(1, min(6, numeric_level))
-            return self._LANGUAGE_LEVELS[numeric_level - 1]
-
-        try:
-            numeric_level = int(float(level_text))
-            numeric_level = max(1, min(6, numeric_level))
-            return self._LANGUAGE_LEVELS[numeric_level - 1]
-        except (TypeError, ValueError):
-            return ''
-
-    def _normalize_skill_category_key(self, value):
-        normalized = str(value or '').strip().lower()
-        normalized = ''.join(
-            character
-            for character in unicodedata.normalize('NFD', normalized)
-            if unicodedata.category(character) != 'Mn'
-        )
-        normalized = re.sub(r'[^a-z0-9\s]', ' ', normalized)
-        normalized = re.sub(r'\s+', ' ', normalized).strip()
-        return normalized
-
-    def _empty_skill_categories(self):
-        return {
-            category: []
-            for category in self._SKILL_PERTINENT_CATEGORIES
-        }
-
-    def _normalize_skill_category_name(self, raw_category):
-        category_key = self._normalize_skill_category_key(raw_category)
-        if not category_key:
-            return ''
-        if category_key in self._SKILL_CATEGORY_ALIASES:
-            return self._SKILL_CATEGORY_ALIASES[category_key]
-
-        for category in self._SKILL_PERTINENT_CATEGORIES:
-            if self._normalize_skill_category_key(category) == category_key:
-                return category
-        return ''
-
-    def _guess_skill_category(self, skill_name):
-        skill_key = self._normalize_skill_key(skill_name)
-        if not skill_key:
-            return 'Technologies'
-
-        if re.search(r'\b(communication|leadership|teamwork|collaboration|adaptability|creativity|problem solving|negotiation|autonomy|empathy|time management)\b', skill_key):
-            return 'Soft Skills'
-        if re.search(r'\b(excel|power bi|tableau|sap|salesforce|figma|photoshop|illustrator|autocad|solidworks|jira|confluence|odoo|ms project|notion|wordpress)\b', skill_key):
-            return 'Logiciels'
-        if re.search(r'\b(python|java|javascript|typescript|php|ruby|go|golang|rust|kotlin|swift|scala|perl|r\b|matlab|sql|plsql|bash|powershell|c\+\+|c#|c\b|objective c|dart|vba)\b', skill_key):
-            return 'Langages de programmation'
-        if re.search(r'\b(arduino|raspberry|plc|automate|microcontroller|fpga|sensor|capteur|oscilloscope|router|switch|server rack|printer|scanner)\b', skill_key):
-            return 'Matériels'
-        if re.search(r'\b(agile|scrum|kanban|lean|six sigma|itil|waterfall|safe|design thinking|prince2)\b', skill_key):
-            return 'Méthodes'
-        if re.search(r'\b(iso\s*\d+|iso|rgpd|gdpr|tcp/ip|http|https|mqtt|opc ua|oauth|tls|ssl|pci dss|rest|soap|hl7)\b', skill_key):
-            return 'Normes et protocoles'
-        if re.search(r'\b(linux|windows|macos|unix|ubuntu|debian|red hat|android|ios|vmware|citrix)\b', skill_key):
-            return 'Systèmes'
-        if re.search(r'\b(seo|sem|google ads|meta ads|content marketing|email marketing|marketing automation|crm campaign|branding|growth hacking)\b', skill_key):
-            return 'Marketing'
-        return 'Technologies'
-
-    def _normalize_experience_skills(self, raw_skills):
-        categorized_skills = self._empty_skill_categories()
-        seen_skills_by_category = {
-            category: set()
-            for category in categorized_skills
-        }
-
-        if isinstance(raw_skills, dict):
-            source_items = raw_skills.items()
-        elif isinstance(raw_skills, list):
-            source_items = [('Technologies', raw_skills)]
+    def _get_cv_extraction_runtime_params(self, cv_text):
+        text_length = len(str(cv_text or ''))
+        params = self.env['ir.config_parameter'].sudo()
+
+        def _int_param(key, default_value):
+            raw_value = (params.get_param(key) or '').strip()
+            if not raw_value:
+                return int(default_value)
+            try:
+                return int(raw_value)
+            except (TypeError, ValueError):
+                return int(default_value)
+
+        max_chunks = _int_param('scoring_candidates.cv_extraction_max_chunks', 0)
+
+        # Dynamic tuning can be disabled from system parameters when fixed sizing is preferred.
+        dynamic_flag = (params.get_param('scoring_candidates.cv_extraction_dynamic') or '1').strip().lower()
+        dynamic_enabled = dynamic_flag not in ('0', 'false', 'no', 'off')
+
+        fixed_chunk_size = _int_param('scoring_candidates.cv_extraction_chunk_size', 9000)
+        fixed_overlap = _int_param('scoring_candidates.cv_extraction_chunk_overlap', 600)
+        fixed_response_tokens = _int_param('scoring_candidates.cv_extraction_max_response_tokens', 5200)
+
+        dynamic_chunk_size_min = _int_param('scoring_candidates.cv_dynamic_chunk_size_min', 6000)
+        dynamic_chunk_size_max = _int_param('scoring_candidates.cv_dynamic_chunk_size_max', 10000)
+        dynamic_overlap_min = _int_param('scoring_candidates.cv_dynamic_overlap_min', 450)
+        dynamic_overlap_max = _int_param('scoring_candidates.cv_dynamic_overlap_max', 700)
+        dynamic_response_tokens_min = _int_param('scoring_candidates.cv_dynamic_response_tokens_min', 3200)
+        dynamic_response_tokens_max = _int_param('scoring_candidates.cv_dynamic_response_tokens_max', 5200)
+
+        short_threshold = _int_param('scoring_candidates.cv_dynamic_short_threshold', 10000)
+        medium_threshold = _int_param('scoring_candidates.cv_dynamic_medium_threshold', 25000)
+
+        if not dynamic_enabled:
+            return {
+                'chunk_size': max(1, fixed_chunk_size),
+                'overlap': max(0, fixed_overlap),
+                'max_chunks': max_chunks,
+                'max_response_tokens': max(256, fixed_response_tokens),
+            }
+
+        if text_length <= short_threshold:
+            chunk_size = dynamic_chunk_size_min
+            overlap = dynamic_overlap_min
+            max_response_tokens = dynamic_response_tokens_min
+        elif text_length <= medium_threshold:
+            chunk_size = int((dynamic_chunk_size_min + dynamic_chunk_size_max) / 2)
+            overlap = int((dynamic_overlap_min + dynamic_overlap_max) / 2)
+            max_response_tokens = int((dynamic_response_tokens_min + dynamic_response_tokens_max) / 2)
         else:
-            source_items = []
+            chunk_size = dynamic_chunk_size_max
+            overlap = dynamic_overlap_max
+            max_response_tokens = dynamic_response_tokens_max
 
-        for raw_category, raw_values in source_items:
-            category_name = self._normalize_skill_category_name(raw_category)
+        return {
+            'chunk_size': max(1, chunk_size),
+            'overlap': max(0, overlap),
+            'max_chunks': max_chunks,
+            'max_response_tokens': max(256, max_response_tokens),
+        }
 
-            if isinstance(raw_values, list):
-                values = raw_values
-            elif isinstance(raw_values, str):
-                values = [raw_values]
-            else:
-                continue
-
-            for raw_value in values:
-                skill_name = str(raw_value).strip()
-                if not skill_name:
-                    continue
-
-                target_category = category_name or self._guess_skill_category(skill_name)
-                if target_category not in categorized_skills:
-                    target_category = 'Technologies'
-
-                fingerprint = skill_name.lower()
-                if fingerprint in seen_skills_by_category[target_category]:
-                    continue
-
-                seen_skills_by_category[target_category].add(fingerprint)
-                categorized_skills[target_category].append(skill_name)
-
-        return categorized_skills
-
-    def _iter_experience_skill_names(self, raw_skills):
-        if isinstance(raw_skills, dict):
-            for category_name in self._SKILL_PERTINENT_CATEGORIES:
-                for skill_name in (raw_skills.get(category_name) or []):
-                    cleaned = str(skill_name).strip()
-                    if cleaned:
-                        yield cleaned
-            return
-
-        if isinstance(raw_skills, list):
-            for skill_name in raw_skills:
-                cleaned = str(skill_name).strip()
-                if cleaned:
-                    yield cleaned
-
-    def _normalize_task_sentences(self, tasks):
-        normalized_tasks = []
-        seen = set()
-        for raw_task in (tasks or []):
-            task_text = str(raw_task or '').strip()
-            if not task_text:
-                continue
-            task_text = re.sub(r'\s+', ' ', task_text)
-            fingerprint = task_text.lower()
-            if fingerprint in seen:
-                continue
-            seen.add(fingerprint)
-            normalized_tasks.append(task_text)
-        return normalized_tasks
-
-    def _normalize_narrative_list(self, values):
-        if isinstance(values, str):
-            text_value = values.strip()
-            return [text_value] if text_value else []
-        if not isinstance(values, list):
+    def _split_cv_chunks(self, cv_text, runtime_params=None):
+        raw_text = str(cv_text or '')
+        if not raw_text:
             return []
 
-        normalized_values = []
-        seen = set()
-        for raw_value in values:
-            text_value = str(raw_value or '').strip()
-            if not text_value:
-                continue
-            fingerprint = text_value.lower()
-            if fingerprint in seen:
-                continue
-            seen.add(fingerprint)
-            normalized_values.append(text_value)
-        return normalized_values
+        runtime = runtime_params or self._get_cv_extraction_runtime_params(raw_text)
+        chunk_size = int(runtime.get('chunk_size') or 9000)
+        overlap = int(runtime.get('overlap') or 600)
+        max_chunks = int(runtime.get('max_chunks') if runtime.get('max_chunks') is not None else 0)
+        if chunk_size <= 0:
+            return [raw_text]
 
-    def _build_task_based_narrative_sections(self, tasks):
-        normalized_tasks = self._normalize_task_sentences(tasks)
-        if not normalized_tasks:
-            return {}
+        overlap = max(0, min(overlap, max(0, chunk_size - 1)))
+        chunks = []
+        start = 0
+        unlimited_chunks = max_chunks <= 0
+        while start < len(raw_text) and (unlimited_chunks or len(chunks) < max_chunks):
+            end = min(start + chunk_size, len(raw_text))
+            chunks.append(raw_text[start:end])
+            if end >= len(raw_text):
+                break
+            start = max(start + 1, end - overlap)
 
-        tasks_block = '; '.join(normalized_tasks)
-        return {
-            'general_context': (
-                'Le contexte general de la mission est constitue des activites suivantes executees sur le perimetre '
-                'du poste: %s.'
-            ) % tasks_block,
-            'project_topic': (
-                'Le sujet principal du projet, tel qu il ressort des actions decrites dans le CV, porte sur les '
-                'travaux suivants: %s.'
-            ) % tasks_block,
-            'responsibilities': (
-                'Les responsabilites occupees couvrent la prise en charge des volets suivants, avec une implication '
-                'operationnelle continue: %s.'
-            ) % tasks_block,
-            'work_done': (
-                [
-                    (
-                        'Le travail realise est detaille par l ensemble des taches suivantes, toutes effectivement '
-                        'mentionnees dans l experience: %s.'
-                    ) % tasks_block
-                ]
-            ),
-            'results_obtained': (
-                [
-                    (
-                        'Les resultats obtenus, observables a partir des taches explicitement decrites dans le CV, '
-                        'se materialisent par la realisation concrete des actions suivantes: %s.'
-                    ) % tasks_block
-                ]
-            ),
-        }
+        return chunks or [raw_text]
 
-    def _enrich_experience_sections_from_tasks(self, experience):
-        if not isinstance(experience, dict):
-            return experience
+    def _estimate_cv_chunk_count(self, text_length, runtime_params=None):
+        if text_length <= 0:
+            return 0
+        runtime = runtime_params or {}
+        chunk_size = int(runtime.get('chunk_size') or 9000)
+        overlap = int(runtime.get('overlap') or 600)
+        if chunk_size <= 0:
+            return 1
+        overlap = max(0, min(overlap, max(0, chunk_size - 1)))
+        step = max(1, chunk_size - overlap)
+        if text_length <= chunk_size:
+            return 1
+        return int(math.ceil(float(text_length - chunk_size) / float(step))) + 1
 
-        normalized_tasks = self._normalize_task_sentences(experience.get('tasks'))
-        experience['tasks'] = normalized_tasks
-        experience['work_done'] = self._normalize_narrative_list(experience.get('work_done'))
-        experience['results_obtained'] = self._normalize_narrative_list(experience.get('results_obtained'))
-        if not normalized_tasks:
-            return experience
+    def _merge_extraction_payloads(self, payloads, extraction_warnings=None):
+        merged = self._default_extracted_profile()
+        merged['extraction_warnings'] = list(extraction_warnings or [])
 
-        task_based_sections = self._build_task_based_narrative_sections(normalized_tasks)
-        for field_name in (
-            'general_context',
-            'project_topic',
-            'responsibilities',
-            'work_done',
-            'results_obtained',
-        ):
-            if field_name in ('work_done', 'results_obtained'):
-                current_values = self._normalize_narrative_list(experience.get(field_name))
-                if not current_values:
-                    experience[field_name] = self._normalize_narrative_list(task_based_sections.get(field_name))
-                else:
-                    experience[field_name] = current_values
+        seen_experiences = set()
+        seen_certifications = set()
+
+        for payload in payloads:
+            if not isinstance(payload, dict):
                 continue
 
-            current_value = str(experience.get(field_name) or '').strip()
-            if len(current_value) < 40:
-                experience[field_name] = task_based_sections.get(field_name, current_value)
-        return experience
+            if not str(merged.get('name') or '').strip():
+                merged['name'] = str(payload.get('name') or '').strip() or merged['name']
 
-    def _validate_ai_profile_structure(self, payload):
-        """
-        Validates the raw LLM JSON payload structure before normalization.
-        Returns a list of warning strings describing structural issues found.
-        These are non-fatal: normalization continues, but issues are logged.
-        """
-        warnings = []
-        if not isinstance(payload, dict):
-            return ['LLM response root is not a JSON object.']
+            education = payload.get('education') if isinstance(payload.get('education'), dict) else {}
+            merged_education = merged.get('education') if isinstance(merged.get('education'), dict) else {}
+            for field_name in ('degree', 'field', 'university', 'date'):
+                if not str(merged_education.get(field_name) or '').strip():
+                    merged_education[field_name] = str(education.get(field_name) or '').strip()
+            merged['education'] = merged_education
 
-        for required_key in ('name', 'education', 'experiences', 'skills'):
-            if required_key not in payload:
-                warnings.append('Missing top-level key: "%s".' % required_key)
-
-        education = payload.get('education')
-        if education is not None and not isinstance(education, dict):
-            warnings.append('"education" field is not an object (got %s).' % type(education).__name__)
-
-        experiences = payload.get('experiences')
-        if experiences is not None and not isinstance(experiences, list):
-            warnings.append('"experiences" field is not a list (got %s).' % type(experiences).__name__)
-        elif isinstance(experiences, list):
-            for exp_index, exp in enumerate(experiences):
-                if not isinstance(exp, dict):
-                    warnings.append('Experience[%d] is not an object.' % exp_index)
+            for experience in (payload.get('experiences') or []):
+                if not isinstance(experience, dict):
                     continue
-                for exp_key in ('title', 'company', 'duration'):
-                    if not str(exp.get(exp_key) or '').strip():
-                        warnings.append('Experience[%d] has empty "%s".' % (exp_index, exp_key))
-                for list_key in ('tasks', 'work_done', 'results_obtained'):
-                    value = exp.get(list_key)
-                    if value is not None and not isinstance(value, list):
-                        warnings.append(
-                            'Experience[%d].%s should be a list (got %s).'
-                            % (exp_index, list_key, type(value).__name__)
-                        )
+                key = (
+                    str(experience.get('title') or '').strip().lower(),
+                    str(experience.get('company') or '').strip().lower(),
+                    str(experience.get('duration') or '').strip().lower(),
+                )
+                if key in seen_experiences:
+                    continue
+                seen_experiences.add(key)
+                merged['experiences'].append(experience)
 
-        skills = payload.get('skills')
-        if skills is not None and not isinstance(skills, dict):
-            warnings.append('"skills" field is not an object (got %s).' % type(skills).__name__)
+            for certification in (payload.get('certification') or []):
+                text = str(certification or '').strip()
+                if not text:
+                    continue
+                fingerprint = text.lower()
+                if fingerprint in seen_certifications:
+                    continue
+                seen_certifications.add(fingerprint)
+                merged['certification'].append(text)
 
-        return warnings
+            for skill_name, skill_level in (payload.get('skills') or {}).items():
+                if not str(skill_name or '').strip():
+                    continue
+                merged['skills'][str(skill_name).strip()] = str(skill_level).strip()
 
-    def _normalize_ai_profile(self, payload):
-        if not isinstance(payload, dict):
-            payload = {}
+            try:
+                merged['experience_years'] = max(
+                    float(merged.get('experience_years') or 0.0),
+                    float(payload.get('experience_years') or 0.0),
+                )
+            except (TypeError, ValueError):
+                pass
 
-        structure_warnings = self._validate_ai_profile_structure(payload)
-        if structure_warnings:
-            for warning in structure_warnings:
-                _logger.warning('AI profile structure issue: %s', warning)
+            for warning in (payload.get('extraction_warnings') or []):
+                warning_text = str(warning).strip()
+                if warning_text and warning_text not in merged['extraction_warnings']:
+                    merged['extraction_warnings'].append(warning_text)
 
-        education = payload.get('education') if isinstance(payload.get('education'), dict) else {}
-        experiences = payload.get('experiences') if isinstance(payload.get('experiences'), list) else []
-        skills = payload.get('skills') if isinstance(payload.get('skills'), dict) else {}
-
-        normalized_experiences = []
-        for experience in experiences:
-            if not isinstance(experience, dict):
-                continue
-            tasks = experience.get('tasks') if isinstance(experience.get('tasks'), list) else []
-            skills_pertinents = self._normalize_experience_skills(experience.get('skills_pertinents'))
-            normalized_experience = {
-                'title': experience.get('title') or '',
-                'company': experience.get('company') or '',
-                'duration': self._normalize_duration_text(experience.get('duration')),
-                'general_context': str(experience.get('general_context') or '').strip(),
-                'project_topic': str(experience.get('project_topic') or '').strip(),
-                'responsibilities': str(experience.get('responsibilities') or '').strip(),
-                'work_done': self._normalize_narrative_list(experience.get('work_done')),
-                'results_obtained': self._normalize_narrative_list(experience.get('results_obtained')),
-                'tasks': [str(task).strip() for task in tasks if str(task).strip()],
-                'skills_pertinents': skills_pertinents,
-            }
-            normalized_experiences.append(self._enrich_experience_sections_from_tasks(normalized_experience))
-
-        section_general_skills = {}
-        section_language_skills = {}
-        for skill_name, skill_level in skills.items():
-            if not skill_name:
-                continue
-            normalized_name = str(skill_name).strip()
-            if not normalized_name:
-                continue
-            canonical_name = self._canonical_skill_name(normalized_name)
-            if not canonical_name:
-                continue
-
-            if self._is_language_skill(canonical_name):
-                normalized_level = self._normalize_language_skill_level(skill_level)
-                if normalized_level:
-                    section_language_skills[canonical_name] = normalized_level
-            else:
-                normalized_level = self._normalize_general_skill_level(skill_level)
-                if normalized_level:
-                    section_general_skills[canonical_name] = normalized_level
-
-        # Keep skills focused on: experience-relevant skills, extracted languages,
-        # and only strong additional skills explicitly present in the CV skills section.
-        relevant_skill_names = set()
-        for experience in normalized_experiences:
-            for skill_name in self._iter_experience_skill_names(experience.get('skills_pertinents')):
-                canonical_name = self._canonical_skill_name(skill_name)
-                if canonical_name:
-                    relevant_skill_names.add(canonical_name)
-
-        normalized_skills = {}
-
-        for skill_name, level in section_language_skills.items():
-            normalized_skills[skill_name] = level
-
-        for skill_name in relevant_skill_names:
-            if skill_name in section_language_skills:
-                normalized_skills[skill_name] = section_language_skills[skill_name]
-            elif skill_name in section_general_skills:
-                normalized_skills[skill_name] = section_general_skills[skill_name]
-            elif not self._is_language_skill(skill_name):
-                normalized_skills[skill_name] = 'Intermediate'
-
-        for skill_name, level in section_general_skills.items():
-            if self._skill_level_to_score5(level) >= int(self._GOOD_SKILL_MIN_SCORE5):
-                normalized_skills.setdefault(skill_name, level)
-
-        certifications = payload.get('certification')
-        if not isinstance(certifications, list):
-            certifications = []
-        normalized_certifications = [
-            str(certification).strip()
-            for certification in certifications
-            if str(certification).strip()
-        ]
-
-        experience_years = self._calculate_experience_years(normalized_experiences)
-
-        return {
-            'id': self.id,
-            'name': payload.get('name') or self.partner_name or '',
-            'education': {
-                'degree': education.get('degree') or '',
-                'field': education.get('field') or '',
-                'university': education.get('university') or '',
-                'date': education.get('date') or '',
-            },
-            'experiences': normalized_experiences,
-            'experience_years': experience_years,
-            'certification': normalized_certifications,
-            'skills': normalized_skills,
-            'extraction_warnings': [],
-        }
+        return merged
 
     def _extract_profile_with_groq(self, cv_text):
         self.ensure_one()
-        import time as _time
-
-        normalized_cv_text = self._normalize_cv_text_for_extraction(cv_text)
-        extraction_hints = self._build_cv_extraction_hints(normalized_cv_text)
+        raw_cv_text = str(cv_text or '')
+        runtime_params = self._get_cv_extraction_runtime_params(raw_cv_text)
 
         system_prompt = (
-            'You are an expert CV parser. '\
+            'You are an Expert CV Parser specialized in extracting structured information from raw CV text. '\
+            'Your task is to read unstructured CV text and extract relevant information into a clean, structured JSON format that strictly follows the provided schema.'\
             'Return ONLY valid JSON with this exact top-level structure: '\
             '{"id": int, "name": str, "education": {"degree": str, "field": str, "university": str, "date": str}, '\
-            '"experiences": [{"title": str, "company": str, "duration": str, "general_context": str, "project_topic": str, "responsibilities": str, "work_done": [str], "results_obtained": [str], "tasks": [str], "skills_pertinents": {'\
+            '"experiences": [{"title": str, "company": str, "duration": str, "general_context": str, "project_topic": str, "responsibilities": str, "work_done": [str], "results_obtained": [str], "skills_pertinents": {'\
             '"Soft Skills": [str], "Logiciels": [str], "Langages de programmation": [str], "Matériels": [str], '\
             '"Méthodes": [str], "Normes et protocoles": [str], "Systèmes": [str], "Technologies": [str], "Marketing": [str]}}], '\
             '"experience_years": float, '\
@@ -1516,10 +490,9 @@ class HrApplicant(models.Model):
             '- work_done = list of concrete actions executed. '\
             '- results_obtained = list of explicit outcomes/KPIs/impact. '\
             'Use only evidence present in CV text. '\
-            'Language rule: write all extracted textual content strictly in French, including tasks and all narrative fields. '\
+            'Language rule: write all extracted textual content strictly in French, including all narrative fields. '\
             'If source text is in another language, translate faithfully into natural professional French without losing meaning. '\
             'Do not infer results from responsibilities. '\
-            'If one of these 5 narrative fields is missing but tasks are present, build it from task sentences instead of leaving it empty. '\
             'Narrative richness rules: for each experience and each of the 5 narrative fields, when evidence exists, write 2 to 4 complete sentences and at least 30 words. '\
             'Each field must be specific and non-generic, grounded in concrete facts from the same experience. '\
             'general_context must mention business/domain context and mission scope. '\
@@ -1528,8 +501,6 @@ class HrApplicant(models.Model):
             'work_done must detail concrete actions, tools/methods, and execution scope. '\
             'results_obtained must describe factual outcomes and quantified impact when present in CV text. '\
             'Avoid short vague fillers like "participation a" without details. '\
-            'Only keep a narrative field empty when no evidence and no tasks exist for that experience. '\
-            'Tasks rule: extract all distinct task bullets/sentences for each experience when present; do not summarize tasks. '\
             'Keep task items concise and deduplicated. '\
             'In "skills", prioritize languages and skills explicitly listed in the CV skills section. '\
             'For technical and soft skills, use exactly one of: Beginner, Elementary, Intermediate, Advanced, Expert. '\
@@ -1539,88 +510,72 @@ class HrApplicant(models.Model):
             'Do not include markdown, comments, or explanations.'
         )
 
-        chunks = self._split_cv_text_chunks(normalized_cv_text)
-        if not chunks:
-            return self._normalize_ai_profile({})
+        chunks = self._split_cv_chunks(raw_cv_text, runtime_params=runtime_params)
+        payloads = []
+        extraction_warnings = []
+        expected_chunk_count = self._estimate_cv_chunk_count(len(raw_cv_text), runtime_params=runtime_params)
+        if expected_chunk_count and len(chunks) < expected_chunk_count:
+            extraction_warnings.append(
+                'CV text was truncated during chunking (%s/%s chunks processed). '
+                'Increase system parameter scoring_candidates.cv_extraction_max_chunks.'
+                % (len(chunks), expected_chunk_count)
+            )
 
-        profiles = []
-        chunk_errors = []
-        for chunk_index, chunk in enumerate(chunks, start=1):
+        for chunk_index, chunk_text in enumerate(chunks, start=1):
             user_prompt = (
-                'Extract CV data from the text below. '\
-                'Set "id" to %s. '\
-                'If a value is missing, use empty string, empty list, or empty object. '\
-                'A deterministic pre-parser generated these optional hints: %s. '\
-                'Use them only when they are explicitly supported by the current CV chunk text. '\
-                'Identify experiences first, then extract details. '\
-                'Write all text outputs in French only (no English): title, company, tasks, and all narrative fields must be in French. '\
-                'If the CV uses another language, translate extracted content to French while preserving factual meaning. '\
-                'For each experience, always include: general_context, project_topic, responsibilities, work_done, results_obtained. '\
-                'Return work_done and results_obtained as arrays of strings (not a single string). '\
-                'Extract all distinct tasks mentioned for that same experience (bullets or action sentences), do not compress them into one summary line. '\
-                'Build the 5 narrative fields from tasks when direct text is sparse, and keep them long, detailed, and fully grounded in the extracted tasks. '\
-                'Use all relevant task sentences for that experience when composing those fields. '\
-                'Mandatory quality gate before final JSON: when evidence exists, each narrative field must have at least 30 words and 2 complete sentences. '\
-                'If a field is too short, expand it with missing context from tasks of the same experience before returning JSON. '\
-                'Prefer precise nouns and action verbs from the CV over generic wording. '\
-                'Only keep a narrative field empty if there is no supporting evidence and no tasks. '\
-                'Always include skills_pertinents as a dictionary of categories for each experience. '\
-                'In top-level skills, include languages and explicit skills-section items first. '\
-                'Use string proficiency levels (not numeric). '\
-                'Chunk %s/%s of a longer CV.\n\nCV TEXT:\n%s'
-            ) % (
-                self.id,
-                json.dumps(extraction_hints, ensure_ascii=False),
-                chunk_index,
-                len(chunks),
-                chunk,
-            )
+                'Extract CV data from the text below. '
+                'Set "id" to %s. '
+                'If a value is missing, use empty string, empty list, or empty object. '
+                'Identify experiences first, then extract details. '
+                'Write all text outputs in French only (no English): title, company, and all narrative fields must be in French. '
+                'If the CV uses another language, translate extracted content to French while preserving factual meaning. '
+                'For each experience, always include: general_context, project_topic, responsibilities, work_done, results_obtained. '
+                'Return work_done and results_obtained as arrays of strings (not a single string). '
+                'Always include skills_pertinents as a dictionary of categories for each experience. '
+                'In top-level skills, include languages and explicit skills-section items first. '
+                'Use string proficiency levels (not numeric). '
+                'This is chunk %s/%s of the same CV.\n\n'
+                'CV TEXT:\n%s'
+            ) % (self.id, chunk_index, len(chunks), chunk_text)
 
-            last_error = None
-            ai_payload = None
+            try:
+                payload = self._call_groq_json(
+                    system_prompt,
+                    user_prompt,
+                    max_tokens=int(runtime_params.get('max_response_tokens') or 5200),
+                    stage='extraction',
+                )
+            except Exception as error:
+                _logger.warning('CV extraction failed on chunk %s/%s: %s', chunk_index, len(chunks), error)
+                extraction_warnings.append('Chunk %s/%s failed: %s' % (chunk_index, len(chunks), error))
+                continue
 
-            for attempt in range(1, 4):
-                try:
-                    ai_payload = self._call_groq_json(
-                        system_prompt,
-                        user_prompt,
-                        max_tokens=self._compute_extraction_max_tokens(chunk),
-                        stage='extraction',
-                    )
-                    break
-                except Exception as chunk_error:
-                    last_error = chunk_error
-                    _logger.warning(
-                        'Chunk %s/%s extraction attempt %s failed: %s',
-                        chunk_index, len(chunks), attempt, chunk_error,
-                    )
-                    if attempt < 3:
-                        _time.sleep(2 ** (attempt - 1))
+            if not isinstance(payload, dict):
+                extraction_warnings.append('Chunk %s/%s returned non-object JSON.' % (chunk_index, len(chunks)))
+                continue
 
-            if ai_payload is not None:
-                profiles.append(self._normalize_ai_profile(ai_payload))
-            else:
-                error_msg = 'Chunk %s/%s failed after 3 attempts: %s' % (chunk_index, len(chunks), last_error)
-                _logger.error(error_msg)
-                chunk_errors.append(error_msg)
-                profiles.append(self._normalize_ai_profile({}))
+            payload.setdefault('id', self.id)
+            payload.setdefault('name', self.partner_name or '')
+            payload.setdefault('education', {'degree': '', 'field': '', 'university': '', 'date': ''})
+            payload.setdefault('experiences', [])
+            payload.setdefault('experience_years', 0.0)
+            payload.setdefault('certification', [])
+            payload.setdefault('skills', {})
+            payload.setdefault('extraction_warnings', [])
+            payloads.append(payload)
 
-        merged = self._merge_profiles(profiles)
-        if not str(merged.get('name') or '').strip() and extraction_hints.get('name_hint'):
-            merged['name'] = extraction_hints['name_hint']
+        if not payloads:
+            default_payload = self._default_extracted_profile()
+            default_payload['extraction_warnings'] = extraction_warnings or ['CV extraction failed for all chunks.']
+            return default_payload
 
-        merged['chunk_count'] = len(chunks)
-        if chunk_errors:
-            existing_warnings = list(merged.get('extraction_warnings') or [])
-            merged['extraction_warnings'] = existing_warnings + chunk_errors
-
-        if len(chunks) > 1:
-            merged_warnings = list(merged.get('extraction_warnings') or [])
-            merged_warnings.append(
-                'Long CV parsed in %s chunks. Verify chronology and duplicate entries manually.' % len(chunks)
-            )
-            merged['extraction_warnings'] = merged_warnings
-        return merged
+        merged_payload = self._merge_extraction_payloads(payloads, extraction_warnings=extraction_warnings)
+        merged_payload['chunk_count'] = len(chunks)
+        if len(chunks) > 1 and not merged_payload.get('extraction_warnings'):
+            merged_payload['extraction_warnings'] = ['Long CV processed in %s chunks.' % len(chunks)]
+        elif len(chunks) > 1:
+            merged_payload['extraction_warnings'].append('Long CV processed in %s chunks.' % len(chunks))
+        return merged_payload
 
     def _skill_level_to_score5(self, raw_level):
         if raw_level is None:
@@ -1726,9 +681,6 @@ class HrApplicant(models.Model):
             'ambiguities_to_verify': [
                 str(item).strip() for item in (feedback.get('ambiguities_to_verify') or []) if str(item).strip()
             ],
-            'interview_questions': [
-                str(item).strip() for item in (feedback.get('interview_questions') or []) if str(item).strip()
-            ],
             'recommendation': str(feedback.get('recommendation') or '').strip(),
         }
 
@@ -1784,32 +736,38 @@ class HrApplicant(models.Model):
         self.ensure_one()
         normalized_job_data = self._normalize_job_skills_for_scoring(job_data)
         system_prompt = (
-            'Tu es un ATS IA et recruteur technique senior. '
-            'Evalue strictement un candidat par rapport a un poste en te basant uniquement sur les donnees JSON fournies.\n\n'
-            'Règles globales:\n'
+            'Framework: PICCO\n\n'
+            '[P] Persona\n'
+            'Tu es un ATS IA et recruteur technique senior.\n\n'
+            '[I] Intent\n'
+            'Evaluer strictement un candidat par rapport a un poste, uniquement a partir des donnees JSON fournies.\n\n'
+            '[C] Context\n'
+            'L evaluation doit etre strictement relative au poste cible (job) et a ses criteres.\n\n'
+            '[C] Constraints\n'
             '1) Zero hallucination: aucune information inventee, aucune hypothese externe.\n'
             '2) Autorite du job: l evaluation doit etre strictement relative a job.\n'
             '3) Langue de sortie: tout le contenu textuel final doit etre en francais.\n'
             '4) Si job.education est vide -> education=15. Si exigences de langues absentes -> langues=10.\n'
             '5) Penalite recence: competence coeur non utilisee depuis >24 mois -> -15% sur sa contribution.\n'
             '6) Densite experience: si poste Senior/Lead/Architect/Manager et titres candidat uniquement Junior/Intern/Trainee -> -10 points sur experience.\n'
-            '7) Stabilite: tenure moyenne <12 mois -> ajouter risque de job hopping + question d entretien specifique.\n'
+            '7) Stabilite: tenure moyenne <12 mois -> ajouter risque de job hopping dans risks et dans ambiguities_to_verify.\n'
             '8) Proximite d outil: outil exact absent mais concurrent direct maitrise -> 50% du credit, et mentionner "Equivalent tool mastered - verification required" dans ambiguities_to_verify.\n'
-            '9) Alignement education: domaine fortement non aligne (ex: Biologie pour Data Science) -> education=0, sauf compensation partielle par certifications specialisees pertinentes.\n\n'
+            '9) Alignement education: domaine fortement non aligne (ex: Biologie pour Data Science) -> education=0, sauf compensation partielle par certifications specialisees pertinentes.\n'
             '10) Interdiction d evaluation generale: ne jamais commenter le candidat en dehors des exigences du poste (pas de jugement global de personnalite, potentiel, ou valeur generale).\n'
-            '11) Traçabilite obligatoire: chaque item de strengths/risks/missing_requirements/bonus_matches doit etre rattache explicitement a un critere du poste (competence, responsabilite, niveau, domaine, langue, outillage, anciennete).\n'
+            '11) Tracabilite obligatoire: chaque item de strengths/risks/missing_requirements/bonus_matches doit etre rattache explicitement a un critere du poste (competence, responsabilite, niveau, domaine, langue, outillage, anciennete).\n'
             '12) Neutralite hors-perimetre: les informations du candidat non demandees par job doivent etre ignorees, sans bonus ni malus.\n'
-            '13) Priorite aux gaps critiques: un manque critique requis par job doit peser plus qu un bonus non requis.\n\n'
-            'Bareme total 100:\n'
+            '13) Priorite aux gaps critiques: un manque critique requis par job doit peser plus qu un bonus non requis.\n'
+            '14) Bareme total 100:\n'
             '- competences_techniques: 0..40\n'
             '- experience: 0..35\n'
             '- education: 0..15\n'
-            '- langues: 0..10\n\n'
-            'Fit level:\n'
+            '- langues: 0..10\n'
+            '15) Fit level:\n'
             '- Adequation forte: score >= 75 et pas de manque critique bloquant\n'
             '- Adequation moderee: score 50..74 ou incertitudes importantes\n'
             '- Adequation faible: score < 50 ou manque critique bloquant\n\n'
-            'Sortie: retourne uniquement un JSON valide et rien d autre, avec cette structure exacte:\n'
+            '[O] Output\n'
+            'Retourne uniquement un JSON valide et rien d autre, avec cette structure exacte:\n'
             '{\n'
             '  "explanation": {\n'
             '    "competences_techniques": "Raisonnement factuel de la note",\n'
@@ -1832,7 +790,6 @@ class HrApplicant(models.Model):
             '    "strengths": ["string"],\n'
             '    "risks": ["string"],\n'
             '    "ambiguities_to_verify": ["string (ex: Chevauchement de dates, niveau réel de l\'outil X)"],\n'
-            '    "interview_questions": ["string (Questions techniques dures basées sur les risques)"],\n'
             '    "recommendation": "Poursuivre|Poursuivre avec prudence|Rejeter"\n'
             '  }\n'
             '}'
@@ -1844,17 +801,25 @@ class HrApplicant(models.Model):
         }
 
         user_prompt = (
-            'Analyse le candidat contre ce poste en appliquant strictement les regles du system_prompt.\n'
-            'Priorites d execution:\n'
-            '1) comparer skills, experience, education et langues;\n'
-            '2) appliquer les ajustements (recence, seniorite, stabilite, equivalence outils, alignement education);\n'
-            '3) calculer les 4 sous-scores dans leurs bornes;\n'
-            '4) deduire fit_level et recommendation;\n'
-            '5) produire des risques et questions d entretien actionnables.\n'
-            '6) chaque phrase de feedback doit citer un lien explicite au poste (requis/souhaite/non requis).\n'
-            '7) ignorer totalement les elements du candidat hors perimetre du poste.\n'
-            '8) ne pas produire de conclusion generale: uniquement une conclusion d adequation au poste cible.\n\n'
-            'Format attendu par item (obligatoire quand applicable): "[Critere job] -> [Evidence candidat] -> [Impact sur score]".\n\n'
+            'Framework: PICCO\n\n'
+            '[P] Persona\n'
+            'Tu agis comme evaluateur ATS technique strict.\n\n'
+            '[I] Intent\n'
+            'Produire une evaluation exploitable pour la decision RH sur ce poste uniquement.\n\n'
+            '[C] Context\n'
+            'Analyse ce candidat contre ce poste en appliquant strictement les regles du system prompt.\n\n'
+            '[C] Constraints\n'
+            '1) Comparer skills, experience, education et langues.\n'
+            '2) Appliquer les ajustements (recence, seniorite, stabilite, equivalence outils, alignement education).\n'
+            '3) Calculer les 4 sous-scores dans leurs bornes.\n'
+            '4) Deduire fit_level et recommendation.\n'
+            '5) Produire des risques et points a verifier actionnables.\n'
+            '6) Chaque phrase de feedback doit citer un lien explicite au poste (requis/souhaite/non requis).\n'
+            '7) Ignorer totalement les elements du candidat hors perimetre du poste.\n'
+            '8) Ne pas produire de conclusion generale: uniquement une conclusion d adequation au poste cible.\n'
+            '9) Format attendu par item (obligatoire quand applicable): "[Critere job] -> [Evidence candidat] -> [Impact sur score]".\n\n'
+            '[O] Output\n'
+            'Respecte strictement le schema JSON exige par le system prompt.\n\n'
             'Donnees JSON a comparer:\n%s'
         ) % json.dumps(prompt_payload, ensure_ascii=False)
 
